@@ -1,7 +1,7 @@
 package org.jsoup.nodes;
 
-import org.jsoup.internal.StringUtil;
 import org.jsoup.helper.Validate;
+import org.jsoup.internal.StringUtil;
 
 import java.io.IOException;
 
@@ -17,10 +17,10 @@ public class TextNode extends LeafNode {
      @see #createFromEncoded(String)
      */
     public TextNode(String text) {
-        value = text;
+        super(text);
     }
 
-	public String nodeName() {
+	@Override public String nodeName() {
         return "#text";
     }
     
@@ -74,23 +74,50 @@ public class TextNode extends LeafNode {
         String tail = text.substring(offset);
         text(head);
         TextNode tailNode = new TextNode(tail);
-        if (parent() != null)
-            parent().addChildren(siblingIndex()+1, tailNode);
+        if (parentNode != null)
+            parentNode.addChildren(siblingIndex()+1, tailNode);
 
         return tailNode;
     }
 
-	void outerHtmlHead(Appendable accum, int depth, Document.OutputSettings out) throws IOException {
+    @Override
+    void outerHtmlHead(Appendable accum, int depth, Document.OutputSettings out) throws IOException {
         final boolean prettyPrint = out.prettyPrint();
-        if (prettyPrint && ((siblingIndex() == 0 && parentNode instanceof Element && ((Element) parentNode).tag().formatAsBlock() && !isBlank()) || (out.outline() && siblingNodes().size()>0 && !isBlank()) ))
-            indent(accum, depth, out);
-
         final boolean normaliseWhite = prettyPrint && !Element.preserveWhitespace(parentNode);
-        final boolean stripWhite = prettyPrint && parentNode instanceof Document;
-        Entities.escape(accum, coreValue(), out, false, normaliseWhite, stripWhite);
+        int escape = Entities.ForText;
+
+        if (normaliseWhite) {
+            escape |= Entities.Normalise;
+            final Element parent = parentNode instanceof Element ? ((Element) parentNode) : null;
+            final boolean trimLikeBlock = parent != null && (parent.tag().isBlock() || parent.tag().formatAsBlock());
+            if ((trimLikeBlock && siblingIndex == 0) || parentNode instanceof Document)
+                escape |= Entities.TrimLeading;
+            if (trimLikeBlock && nextSibling() == null)
+                escape |= Entities.TrimTrailing;
+
+            // if this text is just whitespace, and the next node will cause an indent, skip this text:
+            Node next = nextSibling();
+            Node prev = previousSibling();
+            boolean isBlank = isBlank();
+            boolean couldSkip = (next instanceof Element && ((Element) next).shouldIndent(out)) // next will indent
+                || (next instanceof TextNode && (((TextNode) next).isBlank())) // next is blank text, from re-parenting
+                || (prev instanceof Element && (((Element) prev).isBlock() || prev.nameIs("br"))) // br is a bit special - make sure we don't get a dangling blank line, but not a block otherwise wraps in head
+                ;
+            if (couldSkip && isBlank) return;
+
+            if (
+                (prev == null && parent != null && parent.tag().formatAsBlock() && !isBlank) ||
+                (out.outline() && siblingNodes().size() > 0 && !isBlank) ||
+                (prev != null && prev.nameIs("br")) // special case wrap on inline <br> - doesn't make sense as a block tag
+            )
+                indent(accum, depth, out);
+        }
+
+        Entities.escape(accum, coreValue(), out, escape);
     }
 
-	void outerHtmlTail(Appendable accum, int depth, Document.OutputSettings out) {}
+    @Override
+    void outerHtmlTail(Appendable accum, int depth, Document.OutputSettings out) throws IOException {}
 
     @Override
     public String toString() {
@@ -104,8 +131,8 @@ public class TextNode extends LeafNode {
 
     /**
      * Create a new TextNode from HTML encoded (aka escaped) data.
-     * @param encodedText Text containing encoded HTML (e.g. &amp;lt;)
-     * @return TextNode containing unencoded data (e.g. &lt;)
+     * @param encodedText Text containing encoded HTML (e.g. {@code &lt;})
+     * @return TextNode containing unencoded data (e.g. {@code <})
      */
     public static TextNode createFromEncoded(String encodedText) {
         String text = Entities.unescape(encodedText);
@@ -124,6 +151,4 @@ public class TextNode extends LeafNode {
     static boolean lastCharIsWhitespace(StringBuilder sb) {
         return sb.length() != 0 && sb.charAt(sb.length() - 1) == ' ';
     }
-
-
 }

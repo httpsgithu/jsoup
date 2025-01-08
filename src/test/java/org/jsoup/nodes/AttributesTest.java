@@ -1,10 +1,13 @@
 package org.jsoup.nodes;
 
+import org.jsoup.Jsoup;
 import org.junit.jupiter.api.Test;
 
+import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -141,6 +144,29 @@ public class AttributesTest {
         assertEquals(2, seen);
     }
 
+    @Test void iteratorThrows() {
+        Attributes attrs = new Attributes();
+        attrs.put("One", "one").put("Two", "two");
+
+        Iterator<Attribute> it = attrs.iterator();
+        int seen = 0;
+        while (it.hasNext()) {
+            it.next();
+            seen++;
+        }
+        assertFalse(it.hasNext());
+        assertEquals(2, seen);
+
+        boolean threw = false;
+        try {
+            Attribute next = it.next();
+            assertNotNull(next); // not hit
+        } catch (NoSuchElementException e) {
+            threw = true;
+        }
+        assertTrue(threw);
+    }
+
     @Test
     public void testListSkipsInternal() {
         Attributes a = new Attributes();
@@ -171,6 +197,49 @@ public class AttributesTest {
 
         Iterator<Attribute> iterator = a.iterator();
         assertFalse(iterator.hasNext());
+    }
+
+    @Test
+    public void testIteratorRemove() {
+        String html = "<div 1=1 2=2 3=3 4=4>";
+        Document doc = Jsoup.parse(html);
+        Element el = doc.expectFirst("div");
+        Attributes attrs = el.attributes();
+
+        Iterator<Attribute> iter = attrs.iterator();
+        int seen = 0;
+        while (iter.hasNext()) {
+            seen++;
+            Attribute attr = iter.next();
+            iter.remove();
+        }
+        assertEquals(4, seen);
+        assertEquals(0, attrs.size());
+        assertEquals(0, el.attributesSize());
+    }
+
+    @Test
+    public void testIteratorRemoveConcurrentException() {
+        String html = "<div 1=1 2=2 3=3 4=4>";
+        Document doc = Jsoup.parse(html);
+        Element el = doc.expectFirst("div");
+        Attributes attrs = el.attributes();
+
+        Iterator<Attribute> iter = attrs.iterator();
+        int seen = 0;
+        boolean threw = false;
+        try {
+            while (iter.hasNext()) {
+                seen++;
+                Attribute next = iter.next();
+                el.removeAttr(next.getKey());
+            }
+        } catch (ConcurrentModificationException e) {
+            threw = true;
+        }
+
+        assertEquals(1, seen);
+        assertTrue(threw);
     }
 
     @Test
@@ -225,6 +294,96 @@ public class AttributesTest {
 
         a.put(Attributes.internalKey("baseUri"), "example.com");
         a.put(Attributes.internalKey("another"), "example.com");
-        assertEquals(2, a.size());
+        a.put(Attributes.internalKey("last"), "example.com");
+        a.remove(Attributes.internalKey("last"));
+
+        assertEquals(4, a.size());
+        assertEquals(2, a.asList().size()); // excluded from lists
+    }
+
+    @Test public void testBooleans() {
+        // want unknown=null, and known like async=null, async="", and async=async to collapse
+        String html = "<a foo bar=\"\" async=async qux=qux defer=deferring ismap inert=\"\">";
+        Element el = Jsoup.parse(html).selectFirst("a");
+        assertEquals(" foo bar=\"\" async qux=\"qux\" defer=\"deferring\" ismap inert", el.attributes().html());
+
+    }
+
+    @Test public void booleanNullAttributesConsistent() {
+        Attributes attributes = new Attributes();
+        attributes.put("key", null);
+        Attribute attribute = attributes.iterator().next();
+
+        assertEquals("key", attribute.html());
+        assertEquals(" key", attributes.html());
+    }
+
+    @Test public void booleanEmptyString() {
+        Attributes attributes = new Attributes();
+        attributes.put("checked", "");
+        Attribute attribute = attributes.iterator().next();
+
+        assertEquals("checked", attribute.html());
+        assertEquals(" checked", attributes.html());
+    }
+
+    @Test public void booleanCaseInsensitive() {
+        Attributes attributes = new Attributes();
+        attributes.put("checked", "CHECKED");
+        Attribute attribute = attributes.iterator().next();
+
+        assertEquals("checked", attribute.html());
+        assertEquals(" checked", attributes.html());
+    }
+
+    @Test public void equalsIsOrderInsensitive() {
+        Attributes one = new Attributes()
+            .add("Key1", "Val1")
+            .add("Key2", "Val2")
+            .add("Key3", null);
+
+        Attributes two = new Attributes()
+            .add("Key1", "Val1")
+            .add("Key2", "Val2")
+            .add("Key3", null);
+
+        Attributes three = new Attributes()
+            .add("Key2", "Val2")
+            .add("Key3", null)
+            .add("Key1", "Val1");
+
+        Attributes four = new Attributes()
+            .add("Key1", "Val1")
+            .add("Key2", "Val2")
+            .add("Key3", null)
+            .add("Key4", "Val4");
+
+        assertEquals(one, one.clone());
+        assertEquals(one, two);
+        assertEquals(two, two);
+        assertEquals(one, three);
+        assertEquals(two, three);
+        assertEquals(three, three);
+        assertEquals(three, three.clone());
+        assertEquals(four, four);
+        assertEquals(four, four.clone());
+        assertNotEquals(one, four);
+    }
+
+    @Test void cloneAttributes() {
+        Attributes one = new Attributes()
+            .add("Key1", "Val1")
+            .add("Key2", "Val2")
+            .add("Key3", null);
+        Attributes two = one.clone();
+        assertEquals(3, two.size());
+        assertEquals("Val2", two.get("Key2"));
+        assertEquals(one, two);
+
+        two.add("Key4", "Val4");
+        assertEquals(4, two.size());
+        assertEquals(3, one.size());
+        assertNotEquals(one, two);
+
     }
 }

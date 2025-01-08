@@ -1,11 +1,12 @@
 package org.jsoup.parser;
 
 import org.jsoup.nodes.Attributes;
+import org.jspecify.annotations.Nullable;
 
 import static org.jsoup.internal.Normalizer.lowerCase;
 
 /**
- * Controls parser settings, to optionally preserve tag and/or attribute name case.
+ * Controls parser case settings, to optionally preserve tag and/or attribute name case.
  */
 public class ParseSettings {
     /**
@@ -73,10 +74,15 @@ public class ParseSettings {
         return name;
     }
 
-    Attributes normalizeAttributes(Attributes attributes) {
+    @Nullable Attributes normalizeAttributes(@Nullable Attributes attributes) {
         if (attributes != null && !preserveAttributeCase) {
             attributes.normalize();
         }
         return attributes;
+    }
+
+    /** Returns the normal name that a Tag will have (trimmed and lower-cased) */
+    static String normalName(String name) {
+        return lowerCase(name.trim());
     }
 }
