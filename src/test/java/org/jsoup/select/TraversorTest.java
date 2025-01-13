@@ -1,13 +1,17 @@
 package org.jsoup.select;
 
 import org.jsoup.Jsoup;
+import org.jsoup.TextUtil;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
+import org.jsoup.nodes.TextNode;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 public class TraversorTest {
     // Note: NodeTraversor.traverse(new NodeVisitor) is tested in
@@ -93,7 +97,7 @@ public class TraversorTest {
                 return ("b".equals(node.nodeName())) ? FilterResult.REMOVE : FilterResult.CONTINUE;
             }
         }, doc.select("div"));
-        assertEquals("<div></div>\n<div>\n There be \n</div>", doc.select("body").html());
+        assertEquals("<div></div>\n<div>\n There be\n</div>", doc.select("body").html());
     }
 
     @Test
@@ -128,7 +132,7 @@ public class TraversorTest {
             public void head(Node node, int depth) {
                 if (node instanceof Element) {
                     Element el = (Element) node;
-                    if (el.normalName().equals("i")) {
+                    if (el.nameIs("i")) {
                         Element u = new Element("u").insertChildren(0, el.childNodes());
                         el.replaceWith(u);
                     }
@@ -170,5 +174,50 @@ public class TraversorTest {
             " <p><span>0</span><span>1</span></p>\n" +
             " <p><span>2</span><span>3</span></p>\n" +
             "</div>", doc.body().html());
+    }
+
+    @Test public void canSpecifyOnlyHead() {
+        // really, a compilation test - works as a lambda if just head
+        Document doc = Jsoup.parse("<div><p>One</p></div>");
+        final int[] count = {0};
+        NodeTraversor.traverse((node, depth) -> count[0]++, doc);
+        assertEquals(7, count[0]);
+    }
+
+    @Test public void canRemoveDuringHead() {
+        Document doc = Jsoup.parse("<div><p id=1>Zero<p id=1>One<p id=2>Two<p>Three</div>");
+        NodeTraversor.traverse((node, depth) -> {
+            if (node.attr("id").equals("1"))
+                node.remove();
+            else if (node instanceof TextNode && ((TextNode) node).text().equals("Three"))
+                node.remove();
+        }, doc);
+
+        assertEquals("<div><p id=\"2\">Two</p><p></p></div>", TextUtil.stripNewlines(doc.body().html()));
+    }
+
+    @Test void elementFunctionalTraverse() {
+        Document doc = Jsoup.parse("<div><p>1<p>2<p>3");
+        Element body = doc.body();
+
+        AtomicInteger seenCount = new AtomicInteger();
+        AtomicInteger deepest = new AtomicInteger();
+        body.traverse((node, depth) -> {
+            seenCount.incrementAndGet();
+            if (depth > deepest.get()) deepest.set(depth);
+        });
+
+        assertEquals(8, seenCount.get()); // body and contents
+        assertEquals(3, deepest.get());
+    }
+
+    @Test void seesDocRoot() {
+        Document doc = Jsoup.parse("<p>One");
+        AtomicBoolean seen = new AtomicBoolean(false);
+        doc.traverse((node, depth) -> {
+            if (node.equals(doc))
+                seen.set(true);
+        });
+        assertTrue(seen.get());
     }
 }

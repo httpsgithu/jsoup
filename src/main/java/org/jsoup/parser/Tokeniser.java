@@ -3,6 +3,7 @@ package org.jsoup.parser;
 import org.jsoup.helper.Validate;
 import org.jsoup.internal.StringUtil;
 import org.jsoup.nodes.Entities;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
 
@@ -33,23 +34,28 @@ final class Tokeniser {
     private final ParseErrorList errors; // errors found while tokenising
 
     private TokeniserState state = TokeniserState.Data; // current tokenisation state
-    private Token emitPending; // the token we are about to emit on next read
+    @Nullable private Token emitPending = null; // the token we are about to emit on next read
     private boolean isEmitPending = false;
-    private String charsString = null; // characters pending an emit. Will fall to charsBuilder if more than one
-    private StringBuilder charsBuilder = new StringBuilder(1024); // buffers characters to output as one token, if more than one emit per read
-    StringBuilder dataBuffer = new StringBuilder(1024); // buffers data looking for </script>
+    @Nullable private String charsString = null; // characters pending an emit. Will fall to charsBuilder if more than one
+    private final StringBuilder charsBuilder = new StringBuilder(1024); // buffers characters to output as one token, if more than one emit per read
+    final StringBuilder dataBuffer = new StringBuilder(1024); // buffers data looking for </script>
 
-    Token.Tag tagPending; // tag we are building up
-    Token.StartTag startPending = new Token.StartTag();
-    Token.EndTag endPending = new Token.EndTag();
-    Token.Character charPending = new Token.Character();
-    Token.Doctype doctypePending = new Token.Doctype(); // doctype building up
-    Token.Comment commentPending = new Token.Comment(); // comment building up
-    private String lastStartTag; // the last start tag emitted, to test appropriate end tag
+    final Token.StartTag startPending;
+    final Token.EndTag endPending;
+    Token.Tag tagPending; // tag we are building up: start or end pending
+    final Token.Character charPending = new Token.Character();
+    final Token.Doctype doctypePending = new Token.Doctype(); // doctype building up
+    final Token.Comment commentPending = new Token.Comment(); // comment building up
+    @Nullable private String lastStartTag; // the last start tag emitted, to test appropriate end tag
+    @Nullable private String lastStartCloseSeq; // "</" + lastStartTag, so we can quickly check for that in RCData
 
-    Tokeniser(CharacterReader reader, ParseErrorList errors) {
-        this.reader = reader;
-        this.errors = errors;
+    private int markupStartPos, charStartPos = 0; // reader pos at the start of markup / characters. markup updated on state transition, char on token emit.
+
+    Tokeniser(TreeBuilder treeBuilder) {
+        tagPending = startPending  = new Token.StartTag(treeBuilder);
+        endPending = new Token.EndTag(treeBuilder);
+        this.reader = treeBuilder.reader;
+        this.errors = treeBuilder.parser.getErrors();
     }
 
     Token read() {
@@ -62,14 +68,16 @@ final class Tokeniser {
         if (cb.length() != 0) {
             String str = cb.toString();
             cb.delete(0, cb.length());
+            Token token = charPending.data(str);
             charsString = null;
-            return charPending.data(str);
+            return token;
         } else if (charsString != null) {
             Token token = charPending.data(charsString);
             charsString = null;
             return token;
         } else {
             isEmitPending = false;
+            assert emitPending != null;
             return emitPending;
         }
     }
@@ -79,14 +87,18 @@ final class Tokeniser {
 
         emitPending = token;
         isEmitPending = true;
+        token.startPos(markupStartPos);
+        token.endPos(reader.pos());
+        charStartPos = reader.pos(); // update char start when we complete a token emit
 
         if (token.type == Token.TokenType.StartTag) {
             Token.StartTag startTag = (Token.StartTag) token;
             lastStartTag = startTag.tagName;
+            lastStartCloseSeq = null; // only lazy inits
         } else if (token.type == Token.TokenType.EndTag) {
             Token.EndTag endTag = (Token.EndTag) token;
             if (endTag.hasAttributes())
-                error("Attributes incorrectly present on end tag");
+                error("Attributes incorrectly present on end tag [/%s]", endTag.normalName());
         }
     }
 
@@ -95,38 +107,41 @@ final class Tokeniser {
         // does not set isEmitPending; read checks that
         if (charsString == null) {
             charsString = str;
-        }
-        else {
+        } else {
             if (charsBuilder.length() == 0) { // switching to string builder as more than one emit before read
                 charsBuilder.append(charsString);
             }
             charsBuilder.append(str);
         }
+        charPending.startPos(charStartPos);
+        charPending.endPos(reader.pos());
     }
 
     // variations to limit need to create temp strings
     void emit(final StringBuilder str) {
         if (charsString == null) {
             charsString = str.toString();
-        }
-        else {
+        } else {
             if (charsBuilder.length() == 0) {
                 charsBuilder.append(charsString);
             }
             charsBuilder.append(str);
         }
+        charPending.startPos(charStartPos);
+        charPending.endPos(reader.pos());
     }
 
     void emit(char c) {
         if (charsString == null) {
             charsString = String.valueOf(c);
-        }
-        else {
+        } else {
             if (charsBuilder.length() == 0) {
                 charsBuilder.append(charsString);
             }
             charsBuilder.append(c);
         }
+        charPending.startPos(charStartPos);
+        charPending.endPos(reader.pos());
     }
 
     void emit(char[] chars) {
@@ -141,18 +156,22 @@ final class Tokeniser {
         return state;
     }
 
-    void transition(TokeniserState state) {
-        this.state = state;
+    void transition(TokeniserState newState) {
+        // track markup position on state transitions
+        if (newState == TokeniserState.TagOpen)
+            markupStartPos = reader.pos();
+
+        this.state = newState;
     }
 
-    void advanceTransition(TokeniserState state) {
+    void advanceTransition(TokeniserState newState) {
+        transition(newState);
         reader.advance();
-        this.state = state;
     }
 
     final private int[] codepointHolder = new int[1]; // holder to not have to keep creating arrays
     final private int[] multipointHolder = new int[2];
-    int[] consumeCharacterReference(Character additionalAllowedCharacter, boolean inAttribute) {
+    @Nullable int[] consumeCharacterReference(@Nullable Character additionalAllowedCharacter, boolean inAttribute) {
         if (reader.isEmpty())
             return null;
         if (additionalAllowedCharacter != null && additionalAllowedCharacter == reader.current())
@@ -173,20 +192,23 @@ final class Tokeniser {
 
             reader.unmark();
             if (!reader.matchConsume(";"))
-                characterReferenceError("missing semicolon"); // missing semi
+                characterReferenceError("missing semicolon on [&#%s]", numRef); // missing semi
             int charval = -1;
             try {
                 int base = isHexMode ? 16 : 10;
                 charval = Integer.valueOf(numRef, base);
             } catch (NumberFormatException ignored) {
-            } // skip
-            if (charval == -1 || (charval >= 0xD800 && charval <= 0xDFFF) || charval > 0x10FFFF) {
-                characterReferenceError("character outside of valid range");
+                // skip
+            }
+            // todo: check for extra illegal unicode points as parse errors - described https://html.spec.whatwg.org/multipage/syntax.html#character-references and in Infra
+            // The numeric character reference forms described above are allowed to reference any code point excluding U+000D CR, noncharacters, and controls other than ASCII whitespace.
+            if (charval == -1 || charval > 0x10FFFF) {
+                characterReferenceError("character [%s] outside of valid range", charval);
                 codeRef[0] = replacementChar;
             } else {
                 // fix illegal unicode characters to match browser behavior
                 if (charval >= win1252ExtensionsStart && charval < win1252ExtensionsStart + win1252Extensions.length) {
-                    characterReferenceError("character is not a valid unicode code point");
+                    characterReferenceError("character [%s] is not a valid unicode code point", charval);
                     charval = win1252Extensions[charval - win1252ExtensionsStart];
                 }
 
@@ -205,8 +227,13 @@ final class Tokeniser {
             if (!found) {
                 reader.rewindToMark();
                 if (looksLegit) // named with semicolon
-                    characterReferenceError("invalid named reference");
-                return null;
+                    characterReferenceError("invalid named reference [%s]", nameRef);
+                if (inAttribute) return null;
+                // check if there's a base prefix match; consume and use that if so
+                String prefix = Entities.findPrefix(nameRef);
+                if (prefix.isEmpty()) return null;
+                reader.matchConsume(prefix);
+                nameRef = prefix;
             }
             if (inAttribute && (reader.matchesLetter() || reader.matchesDigit() || reader.matchesAny('=', '-', '_'))) {
                 // don't want that to match
@@ -216,7 +243,7 @@ final class Tokeniser {
 
             reader.unmark();
             if (!reader.matchConsume(";"))
-                characterReferenceError("missing semicolon"); // missing semi
+                characterReferenceError("missing semicolon on [&%s]", nameRef); // missing semi
             int numChars = Entities.codepointsForName(nameRef, multipointHolder);
             if (numChars == 1) {
                 codeRef[0] = multipointHolder[0];
@@ -269,35 +296,40 @@ final class Tokeniser {
         return lastStartTag != null && tagPending.name().equalsIgnoreCase(lastStartTag);
     }
 
-    String appropriateEndTagName() {
+    @Nullable String appropriateEndTagName() {
         return lastStartTag; // could be null
+    }
+
+    /** Returns the closer sequence {@code </lastStart} */
+    String appropriateEndTagSeq() {
+        if (lastStartCloseSeq == null) // reset on start tag emit
+            lastStartCloseSeq = "</" + lastStartTag;
+        return lastStartCloseSeq;
     }
 
     void error(TokeniserState state) {
         if (errors.canAddError())
-            errors.add(new ParseError(reader.pos(), "Unexpected character '%s' in input state [%s]", reader.current(), state));
+            errors.add(new ParseError(reader, "Unexpected character '%s' in input state [%s]", reader.current(), state));
     }
 
     void eofError(TokeniserState state) {
         if (errors.canAddError())
-            errors.add(new ParseError(reader.pos(), "Unexpectedly reached end of file (EOF) in input state [%s]", state));
+            errors.add(new ParseError(reader, "Unexpectedly reached end of file (EOF) in input state [%s]", state));
     }
 
-    private void characterReferenceError(String message) {
+    private void characterReferenceError(String message, Object... args) {
         if (errors.canAddError())
-            errors.add(new ParseError(reader.pos(), "Invalid character reference: %s", message));
+            errors.add(new ParseError(reader, String.format("Invalid character reference: " + message, args)));
     }
 
     void error(String errorMsg) {
         if (errors.canAddError())
-            errors.add(new ParseError(reader.pos(), errorMsg));
+            errors.add(new ParseError(reader, errorMsg));
     }
 
-    boolean currentNodeInHtmlNS() {
-        // todo: implement namespaces correctly
-        return true;
-        // Element currentNode = currentNode();
-        // return currentNode != null && currentNode.namespace().equals("HTML");
+    void error(String errorMsg, Object... args) {
+        if (errors.canAddError())
+            errors.add(new ParseError(reader, errorMsg, args));
     }
 
     /**

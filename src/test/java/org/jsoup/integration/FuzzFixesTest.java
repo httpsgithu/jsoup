@@ -4,17 +4,29 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.parser.Parser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- Tests fixes for issues raised by the OSS Fuzz project @ https://oss-fuzz.com/testcases?project=jsoup
+ Tests fixes for issues raised by the OSS Fuzz project @ https://oss-fuzz.com/testcases?project=jsoup. Contains inline
+ string cases causing exceptions. Timeout tests are in FuzzFixesIT.
  */
 public class FuzzFixesTest {
+
+    private static Stream<File> testFiles() {
+        File[] files = FuzzFixesIT.testDir.listFiles();
+        assertNotNull(files);
+        assertTrue(files.length > 10);
+
+        return Stream.of(files);
+    }
 
     @Test
     public void blankAbsAttr() {
@@ -25,48 +37,27 @@ public class FuzzFixesTest {
     }
 
     @Test
-    public void resetInsertionMode() throws IOException {
-        // https://github.com/jhy/jsoup/issues/1538
-        File in = ParseTest.getFile("/fuzztests/1538.html"); // lots of escape chars etc.
-        Document doc = Jsoup.parse(in, "UTF-8");
+    public void bookmark() {
+        // https://github.com/jhy/jsoup/issues/1576
+        String html = "<?a<U<P<A ";
+        Document doc = Jsoup.parse(html);
+        assertNotNull(doc);
+
+        Document xmlDoc = Parser.xmlParser().parseInput(html, "");
+        assertNotNull(xmlDoc);
+    }
+
+    @ParameterizedTest
+    @MethodSource("testFiles")
+    void testHtmlParse(File file) throws IOException {
+        Document doc = Jsoup.parse(file, "UTF-8", "https://example.com/");
         assertNotNull(doc);
     }
 
-    @Test
-    public void xmlDeclOverflow() throws IOException {
-        // https://github.com/jhy/jsoup/issues/1539
-        File in = ParseTest.getFile("/fuzztests/1539.html"); // lots of escape chars etc.
-        Document doc = Jsoup.parse(in, "UTF-8");
-        assertNotNull(doc);
-
-        Document docXml = Jsoup.parse(new FileInputStream(in), "UTF-8", "https://example.com", Parser.xmlParser());
-        assertNotNull(docXml);
-    }
-
-    @Test
-    public void xmlDeclOverflowOOM() throws IOException {
-        // https://github.com/jhy/jsoup/issues/1569
-        File in = ParseTest.getFile("/fuzztests/1569.html");
-        Document doc = Jsoup.parse(in, "UTF-8");
-        assertNotNull(doc);
-
-        Document docXml = Jsoup.parse(new FileInputStream(in), "UTF-8", "https://example.com", Parser.xmlParser());
-        assertNotNull(docXml);
-    }
-
-    @Test
-    public void stackOverflowState14() throws IOException {
-        // https://github.com/jhy/jsoup/issues/1543
-        File in = ParseTest.getFile("/fuzztests/1543.html");
-        Document doc = Jsoup.parse(in, "UTF-8");
-        assertNotNull(doc);
-    }
-
-    @Test
-    public void parseTimeout() throws IOException {
-        // https://github.com/jhy/jsoup/issues/1544
-        File in = ParseTest.getFile("/fuzztests/1544.html");
-        Document doc = Jsoup.parse(in, "UTF-8");
+    @ParameterizedTest
+    @MethodSource("testFiles")
+    void testXmlParse(File file) throws IOException {
+        Document doc = Jsoup.parse(file, "UTF-8", "https://example.com/", Parser.xmlParser());
         assertNotNull(doc);
     }
 }

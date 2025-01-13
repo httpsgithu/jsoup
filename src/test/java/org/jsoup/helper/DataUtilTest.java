@@ -1,14 +1,21 @@
 package org.jsoup.helper;
 
 import org.jsoup.Jsoup;
+import org.jsoup.integration.ParseTest;
+import org.jsoup.internal.ControllableInputStream;
 import org.jsoup.nodes.Document;
 import org.jsoup.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.jsoup.integration.ParseTest.getFile;
+import static org.jsoup.integration.ParseTest.getPath;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class DataUtilTest {
@@ -31,17 +38,12 @@ public class DataUtilTest {
         assertEquals("UTF-8", DataUtil.getCharsetFromContentType("text/html; charset='UTF-8'"));
     }
 
-    private InputStream stream(String data) {
-        return new ByteArrayInputStream(data.getBytes(StandardCharsets.UTF_8));
+    private ControllableInputStream stream(String data) {
+        return ControllableInputStream.wrap(new ByteArrayInputStream(data.getBytes(StandardCharsets.UTF_8)), 0);
     }
 
-    private InputStream stream(String data, String charset) {
-        try {
-            return new ByteArrayInputStream(data.getBytes(charset));
-        } catch (UnsupportedEncodingException e) {
-            fail();
-        }
-        return null;
+    private ControllableInputStream stream(String data, String charset) {
+        return ControllableInputStream.wrap(new ByteArrayInputStream(data.getBytes(Charset.forName(charset))), 0);
     }
 
     @Test
@@ -131,6 +133,23 @@ public class DataUtilTest {
     }
 
     @Test
+    public void parseSequenceInputStream() throws IOException {
+        // https://github.com/jhy/jsoup/pull/1671
+        File in = getFile("/htmltests/medium.html");
+        String fileContent = new String(Files.readAllBytes(in.toPath()));
+        int halfLength = fileContent.length() / 2;
+        String firstPart = fileContent.substring(0, halfLength);
+        String secondPart = fileContent.substring(halfLength);
+        SequenceInputStream sequenceStream = new SequenceInputStream(
+                stream(firstPart),
+                stream(secondPart)
+        );
+        ControllableInputStream stream = ControllableInputStream.wrap(sequenceStream, 0);
+        Document doc = DataUtil.parseInputStream(stream, null, "", Parser.htmlParser());
+        assertEquals(fileContent, doc.outerHtml());
+    }
+
+    @Test
     public void supportsBOMinFiles() throws IOException {
         // test files from http://www.i18nl10n.com/korean/utftest/
         File in = getFile("/bomtests/bom_utf16be.html");
@@ -155,6 +174,31 @@ public class DataUtilTest {
     }
 
     @Test
+    public void streamerSupportsBOMinFiles() throws IOException {
+        // test files from http://www.i18nl10n.com/korean/utftest/
+        Path in = getFile("/bomtests/bom_utf16be.html").toPath();
+        Parser parser = Parser.htmlParser();
+        Document doc = DataUtil.streamParser(in, null, "http://example.com", parser).complete();
+        assertTrue(doc.title().contains("UTF-16BE"));
+        assertTrue(doc.text().contains("가각갂갃간갅"));
+
+        in = getFile("/bomtests/bom_utf16le.html").toPath();
+        doc = DataUtil.streamParser(in, null, "http://example.com", parser).complete();
+        assertTrue(doc.title().contains("UTF-16LE"));
+        assertTrue(doc.text().contains("가각갂갃간갅"));
+
+        in = getFile("/bomtests/bom_utf32be.html").toPath();
+        doc = DataUtil.streamParser(in, null, "http://example.com", parser).complete();
+        assertTrue(doc.title().contains("UTF-32BE"));
+        assertTrue(doc.text().contains("가각갂갃간갅"));
+
+        in = getFile("/bomtests/bom_utf32le.html").toPath();
+        doc = DataUtil.streamParser(in, null, "http://example.com", parser).complete();
+        assertTrue(doc.title().contains("UTF-32LE"));
+        assertTrue(doc.text().contains("가각갂갃간갅"));
+    }
+
+    @Test
     public void supportsUTF8BOM() throws IOException {
         File in = getFile("/bomtests/bom_utf8.html");
         Document doc = Jsoup.parse(in, null, "http://example.com");
@@ -163,7 +207,7 @@ public class DataUtilTest {
 
     @Test
     public void noExtraNULLBytes() throws IOException {
-    	final byte[] b = "<html><head><meta charset=\"UTF-8\"></head><body><div><u>ü</u>ü</div></body></html>".getBytes("UTF-8");
+    	final byte[] b = "<html><head><meta charset=\"UTF-8\"></head><body><div><u>ü</u>ü</div></body></html>".getBytes(StandardCharsets.UTF_8);
     	
     	Document doc = Jsoup.parse(new ByteArrayInputStream(b), null, "");
     	assertFalse( doc.outerHtml().contains("\u0000") );
@@ -178,13 +222,21 @@ public class DataUtilTest {
     }
 
     @Test
+    public void streamerSupportsZippedUTF8BOM() throws IOException {
+        Path in = getFile("/bomtests/bom_utf8.html.gz").toPath();
+        Document doc = DataUtil.streamParser(in, null, "http://example.com", Parser.htmlParser()).complete();
+        assertEquals("OK", doc.head().select("title").text());
+        assertEquals("There is a UTF8 BOM at the top (before the XML decl). If not read correctly, will look like a non-joining space.", doc.body().text());
+    }
+
+    @Test
     public void supportsXmlCharsetDeclaration() throws IOException {
         String encoding = "iso-8859-1";
         InputStream soup = new ByteArrayInputStream((
                 "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>" +
                         "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" +
                         "<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\" xml:lang=\"en\">Hellö Wörld!</html>"
-        ).getBytes(encoding));
+        ).getBytes(Charset.forName(encoding)));
 
         Document doc = Jsoup.parse(soup, null, "");
         assertEquals("Hellö Wörld!", doc.body().text());
@@ -192,8 +244,16 @@ public class DataUtilTest {
 
 
     @Test
-    public void lLoadsGzipFile() throws IOException {
+    public void loadsGzipFile() throws IOException {
         File in = getFile("/htmltests/gzip.html.gz");
+        Document doc = Jsoup.parse(in, null);
+        assertEquals("Gzip test", doc.title());
+        assertEquals("This is a gzipped HTML file.", doc.selectFirst("p").text());
+    }
+
+    @Test
+    public void loadsGzipPath() throws IOException {
+        Path in = getPath("/htmltests/gzip.html.gz");
         Document doc = Jsoup.parse(in, null);
         assertEquals("Gzip test", doc.title());
         assertEquals("This is a gzipped HTML file.", doc.selectFirst("p").text());
@@ -209,10 +269,79 @@ public class DataUtilTest {
     }
 
     @Test
+    public void loadsZGzipPath() throws IOException {
+        // compressed on win, with z suffix
+        Path in = getPath("/htmltests/gzip.html.z");
+        Document doc = Jsoup.parse(in, null);
+        assertEquals("Gzip test", doc.title());
+        assertEquals("This is a gzipped HTML file.", doc.selectFirst("p").text());
+    }
+
+    @Test
     public void handlesFakeGzipFile() throws IOException {
         File in = getFile("/htmltests/fake-gzip.html.gz");
         Document doc = Jsoup.parse(in, null);
         assertEquals("This is not gzipped", doc.title());
         assertEquals("And should still be readable.", doc.selectFirst("p").text());
+    }
+
+    @Test
+    public void handlesFakeGzipPath() throws IOException {
+        Path in = getPath("/htmltests/fake-gzip.html.gz");
+        Document doc = Jsoup.parse(in, null);
+        assertEquals("This is not gzipped", doc.title());
+        assertEquals("And should still be readable.", doc.selectFirst("p").text());
+    }
+
+    // an input stream to give a range of output sizes, that changes on each read
+    static class VaryingReadInputStream extends InputStream {
+        final InputStream in;
+        int stride = 0;
+
+        VaryingReadInputStream(InputStream in) {
+            this.in = in;
+        }
+
+        public int read() throws IOException {
+            return in.read();
+        }
+
+        public int read(byte[] b) throws IOException {
+            return in.read(b, 0, Math.min(b.length, ++stride));
+        }
+
+        public int read(byte[] b, int off, int len) throws IOException {
+            return in.read(b, off, Math.min(len, ++stride));
+        }
+    }
+
+    @Test
+    void handlesChunkedInputStream() throws IOException {
+        File inputFile = ParseTest.getFile("/htmltests/large.html");
+        String input = ParseTest.getFileAsString(inputFile);
+        VaryingReadInputStream stream = new VaryingReadInputStream(ParseTest.inputStreamFrom(input));
+
+        Document expected = Jsoup.parse(input, "https://example.com");
+        Document doc = Jsoup.parse(stream, null, "https://example.com");
+        assertTrue(doc.hasSameValue(expected));
+    }
+
+    @Test
+    void handlesUnlimitedRead() throws IOException {
+        File inputFile = ParseTest.getFile("/htmltests/large.html");
+        String input = ParseTest.getFileAsString(inputFile);
+        VaryingReadInputStream stream = new VaryingReadInputStream(ParseTest.inputStreamFrom(input));
+
+        ByteBuffer byteBuffer = DataUtil.readToByteBuffer(stream, 0);
+        String read = new String(byteBuffer.array(), 0, byteBuffer.limit(), StandardCharsets.UTF_8);
+
+        assertEquals(input, read);
+    }
+
+    @Test void controllableInputStreamAllowsNull() throws IOException {
+        ControllableInputStream is = ControllableInputStream.wrap(null, 0);
+        assertNotNull(is);
+        assertTrue(is.baseReadFully());
+        is.close();
     }
 }
