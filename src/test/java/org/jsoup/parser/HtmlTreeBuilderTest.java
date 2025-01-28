@@ -1,16 +1,15 @@
 package org.jsoup.parser;
 
 
+import org.jsoup.nodes.Element;
+import org.jspecify.annotations.NullMarked;
 import org.junit.jupiter.api.Test;
-
-import javax.annotation.Nonnull;
-import javax.annotation.ParametersAreNonnullByDefault;
 import java.io.Reader;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.List;
 
+import static org.jsoup.parser.Parser.NamespaceHtml;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class HtmlTreeBuilderTest {
@@ -18,7 +17,7 @@ public class HtmlTreeBuilderTest {
     public void ensureSearchArraysAreSorted() {
         List<Object[]> constants = HtmlTreeBuilderStateTest.findConstantArrays(HtmlTreeBuilder.class);
         HtmlTreeBuilderStateTest.ensureSorted(constants);
-        assertEquals(7, constants.size());
+        assertEquals(11, constants.size());
     }
 
     @Test
@@ -31,17 +30,35 @@ public class HtmlTreeBuilderTest {
     }
 
     @Test public void nonnullAssertions() throws NoSuchMethodException {
-        Method parseMethod = TreeBuilder.class.getDeclaredMethod("parse", Reader.class, String.class, Parser.class);
-        assertNotNull(parseMethod);
-        Annotation[] declaredAnnotations = parseMethod.getDeclaredAnnotations();
+        Annotation[] declaredAnnotations = TreeBuilder.class.getPackage().getDeclaredAnnotations();
         boolean seen = false;
         for (Annotation annotation : declaredAnnotations) {
-            if (annotation.annotationType().isAssignableFrom(ParametersAreNonnullByDefault.class))
+            if (annotation.annotationType().isAssignableFrom(NullMarked.class))
                 seen = true;
         }
 
         // would need to rework this if/when that annotation moves from the method to the class / package.
         assertTrue(seen);
+    }
 
+    @Test void isSpecial() {
+        ParseSettings settings = ParseSettings.htmlDefault;
+        Element htmlEl = new Element(Tag.valueOf("div", NamespaceHtml, settings), "");
+        assertTrue(HtmlTreeBuilder.isSpecial(htmlEl));
+
+        Element notHtml = new Element(Tag.valueOf("not-html", NamespaceHtml, settings), "");
+        assertFalse(HtmlTreeBuilder.isSpecial(notHtml));
+
+        Element mathEl = new Element(Tag.valueOf("mi", Parser.NamespaceMathml, settings), "");
+        assertTrue(HtmlTreeBuilder.isSpecial(mathEl));
+
+        Element notMathEl = new Element(Tag.valueOf("not-math", Parser.NamespaceMathml, settings), "");
+        assertFalse(HtmlTreeBuilder.isSpecial(notMathEl));
+
+        Element svgEl = new Element(Tag.valueOf("title", Parser.NamespaceSvg, settings), "");
+        assertTrue(HtmlTreeBuilder.isSpecial(svgEl));
+
+        Element notSvgEl = new Element(Tag.valueOf("not-svg", Parser.NamespaceSvg, settings), "");
+        assertFalse(HtmlTreeBuilder.isSpecial(notSvgEl));
     }
 }

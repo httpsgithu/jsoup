@@ -1,26 +1,29 @@
 package org.jsoup.nodes;
 
 import org.jsoup.Jsoup;
+import org.jsoup.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import static org.jsoup.nodes.Document.OutputSettings;
 import static org.jsoup.nodes.Entities.EscapeMode.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class EntitiesTest {
     @Test public void escape() {
-        String text = "Hello &<> Å å π 新 there ¾ © »";
+        // escape is maximal (as in the escapes cover use in both text and attributes; vs Element.html() which checks if attribute or text and minimises escapes
+        String text = "Hello &<> Å å π 新 there ¾ © » ' \"";
         String escapedAscii = Entities.escape(text, new OutputSettings().charset("ascii").escapeMode(base));
         String escapedAsciiFull = Entities.escape(text, new OutputSettings().charset("ascii").escapeMode(extended));
         String escapedAsciiXhtml = Entities.escape(text, new OutputSettings().charset("ascii").escapeMode(xhtml));
         String escapedUtfFull = Entities.escape(text, new OutputSettings().charset("UTF-8").escapeMode(extended));
         String escapedUtfMin = Entities.escape(text, new OutputSettings().charset("UTF-8").escapeMode(xhtml));
 
-        assertEquals("Hello &amp;&lt;&gt; &Aring; &aring; &#x3c0; &#x65b0; there &frac34; &copy; &raquo;", escapedAscii);
-        assertEquals("Hello &amp;&lt;&gt; &angst; &aring; &pi; &#x65b0; there &frac34; &copy; &raquo;", escapedAsciiFull);
-        assertEquals("Hello &amp;&lt;&gt; &#xc5; &#xe5; &#x3c0; &#x65b0; there &#xbe; &#xa9; &#xbb;", escapedAsciiXhtml);
-        assertEquals("Hello &amp;&lt;&gt; Å å π 新 there ¾ © »", escapedUtfFull);
-        assertEquals("Hello &amp;&lt;&gt; Å å π 新 there ¾ © »", escapedUtfMin);
+        assertEquals("Hello &amp;&lt;&gt; &Aring; &aring; &#x3c0; &#x65b0; there &frac34; &copy; &raquo; &apos; &quot;", escapedAscii);
+        assertEquals("Hello &amp;&lt;&gt; &angst; &aring; &pi; &#x65b0; there &frac34; &copy; &raquo; &apos; &quot;", escapedAsciiFull);
+        assertEquals("Hello &amp;&lt;&gt; &#xc5; &#xe5; &#x3c0; &#x65b0; there &#xbe; &#xa9; &#xbb; &#x27; &quot;", escapedAsciiXhtml);
+        assertEquals("Hello &amp;&lt;&gt; Å å π 新 there ¾ © » &apos; &quot;", escapedUtfFull);
+        assertEquals("Hello &amp;&lt;&gt; Å å π 新 there ¾ © » &#x27; &quot;", escapedUtfMin);
         // odd that it's defined as aring in base but angst in full
 
         // round trip
@@ -29,6 +32,12 @@ public class EntitiesTest {
         assertEquals(text, Entities.unescape(escapedAsciiXhtml));
         assertEquals(text, Entities.unescape(escapedUtfFull));
         assertEquals(text, Entities.unescape(escapedUtfMin));
+    }
+
+    @Test public void escapeDefaults() {
+        String text = "Hello &<> Å å π 新 there ¾ © » ' \"";
+        String escaped = Entities.escape(text);
+        assertEquals("Hello &amp;&lt;&gt; Å å π 新 there ¾ © » &apos; &quot;", escaped);
     }
 
     @Test public void escapedSupplementary() {
@@ -103,6 +112,13 @@ public class EntitiesTest {
         assertEquals("Hello &= &", Entities.unescape(text, false));
     }
 
+    @Test public void prefixMatch() {
+        // https://github.com/jhy/jsoup/issues/2207
+        // example from https://html.spec.whatwg.org/multipage/parsing.html#character-reference-state
+        String text = "I'm &notit; I tell you. I'm &notin; I tell you.";
+        assertEquals("I'm ¬it; I tell you. I'm ∉ I tell you.", Entities.unescape(text, false));
+        assertEquals("I'm &notit; I tell you. I'm ∉ I tell you.", Entities.unescape(text, true)); // not for attributes
+    }
 
     @Test public void caseSensitive() {
         String unescaped = "Ü ü & &";
@@ -149,5 +165,38 @@ public class EntitiesTest {
 
         doc.outputSettings().escapeMode(xhtml);
         assertEquals("<a title=\"&lt;p>One&lt;/p>\">One</a>", element.outerHtml());
+    }
+
+    @Test public void controlCharactersAreEscaped() {
+        // https://github.com/jhy/jsoup/issues/1556
+        // we escape ascii control characters in both HTML and XML for compatibility. Required in XML and probably
+        // easier to read in HTML
+        String input = "<a foo=\"&#x1b;esc&#x7;bell\">Text &#x1b; &#x7;</a>";
+        Document doc = Jsoup.parse(input);
+        assertEquals(input, doc.body().html());
+
+        Document xml = Jsoup.parse(input, "", Parser.xmlParser());
+        assertEquals(input, xml.html());
+    }
+    
+    @Test public void escapeByClonedOutputSettings() {
+        OutputSettings outputSettings = new OutputSettings();
+        String text = "Hello &<> Å å π 新 there ¾ © »";
+        OutputSettings clone1 = outputSettings.clone();
+        OutputSettings clone2 = outputSettings.clone();
+
+        String escaped1 = assertDoesNotThrow(() -> Entities.escape(text, clone1));
+        String escaped2 = assertDoesNotThrow(() -> Entities.escape(text, clone2));
+        assertEquals(escaped1, escaped2);
+    }
+
+    @Test void parseHtmlEncodedEmojiMultipoint() {
+        String emoji = Parser.unescapeEntities("&#55357;&#56495;", false); // 💯
+        assertEquals("\uD83D\uDCAF", emoji);
+    }
+
+    @Test void parseHtmlEncodedEmoji() {
+        String emoji = Parser.unescapeEntities("&#128175;", false); // 💯
+        assertEquals("\uD83D\uDCAF", emoji);
     }
 }

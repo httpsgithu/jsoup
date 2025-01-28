@@ -3,11 +3,14 @@ package org.jsoup.nodes;
 import org.jsoup.Jsoup;
 import org.jsoup.TextUtil;
 import org.jsoup.parser.Tag;
+import org.jsoup.select.Elements;
 import org.jsoup.select.NodeVisitor;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
 
+import static org.jsoup.parser.Parser.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -132,6 +135,21 @@ public class NodeTest {
         assertEquals("http://example.com/one/two.html", a1.absUrl("href"));
     }
 
+    @Test public void handlesAbsOnUnknownProtocols() {
+        // https://github.com/jhy/jsoup/issues/1610
+        // URL would throw on unknown protocol tel: as no stream handler is registered
+
+        String[] urls = {"mailto:example@example.com", "tel:867-5309"}; // mail has a handler, tel doesn't
+        for (String url : urls) {
+            Attributes attr = new Attributes().put("href", url);
+            Element noBase = new Element(Tag.valueOf("a"), null, attr);
+            assertEquals(url, noBase.absUrl("href"));
+
+            Element withBase = new Element(Tag.valueOf("a"), "http://example.com/", attr);
+            assertEquals(url, withBase.absUrl("href"));
+        }
+    }
+
     @Test public void testRemove() {
         Document doc = Jsoup.parse("<p>One <span>two</span> three</p>");
         Element p = doc.select("p").first();
@@ -141,6 +159,14 @@ public class NodeTest {
         assertEquals("<span>two</span> three", TextUtil.stripNewlines(p.html()));
     }
 
+    @Test void removeOnOrphanIsNoop() {
+        // https://github.com/jhy/jsoup/issues/1898
+        Element node = new Element("div");
+        assertNull(node.parentNode());
+        node.remove();
+        assertNull(node.parentNode());
+    }
+
     @Test public void testReplace() {
         Document doc = Jsoup.parse("<p>One <span>two</span> three</p>");
         Element p = doc.select("p").first();
@@ -148,6 +174,19 @@ public class NodeTest {
         p.childNode(1).replaceWith(insert);
 
         assertEquals("One <em>foo</em> three", p.html());
+    }
+
+    @Test public void testReplaceTwice() {
+        // https://github.com/jhy/jsoup/issues/2212
+        Document doc = Jsoup.parse("<p><span>Child One</span><span>Child Two</span><span>Child Three</span><span>Child Four</span></p>");
+        Elements children = doc.select("p").first().children();
+        // first swap 0 and 1
+        children.set(0,  children.set(1, children.get(0)));
+        // then swap 1 and 2
+        children.set(2, children.set(1, children.get(2)));
+
+        assertEquals("Child TwoChild ThreeChild OneChild Four",
+                TextUtil.stripNewlines(children.html()));
     }
 
     @Test public void ownerDocument() {
@@ -185,6 +224,25 @@ public class NodeTest {
         assertEquals("<p>One <em>four</em><i>five</i><b>two</b> three</p>", doc.body().html());
     }
 
+    @Test void beforeShuffle() {
+        // https://github.com/jhy/jsoup/issues/1898
+        Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three</div>");
+        Element div = doc.select("div").get(0);
+        Elements ps = doc.select("p");
+        Element p1 = ps.get(0);
+        Element p2 = ps.get(1);
+        Element p3 = ps.get(2);
+
+        p2.before(p1);
+        p3.before(p2);
+        // ^ should be no-ops, they are already before
+        assertEquals("One Two Three", div.text());
+
+        p2.before(p1);
+        p1.before(p3);
+        assertEquals("Three One Two", div.text());
+    }
+
     @Test public void after() {
         Document doc = Jsoup.parse("<p>One <b>two</b> three</p>");
         Element newNode = new Element(Tag.valueOf("em"), "");
@@ -195,6 +253,25 @@ public class NodeTest {
 
         doc.select("b").first().after("<i>five</i>");
         assertEquals("<p>One <b>two</b><i>five</i><em>four</em> three</p>", doc.body().html());
+    }
+
+    @Test void afterShuffle() {
+        // https://github.com/jhy/jsoup/issues/1898
+        Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three</div>");
+        Element div = doc.select("div").get(0);
+        Elements ps = doc.select("p");
+        Element p1 = ps.get(0);
+        Element p2 = ps.get(1);
+        Element p3 = ps.get(2);
+
+        p1.after(p2);
+        p2.after(p3);
+        // ^ should be no-ops, they are already before
+        assertEquals("One Two Three", div.text());
+
+        p3.after(p1);
+        p1.after(p2);
+        assertEquals("Three One Two", div.text());
     }
 
     @Test public void unwrap() {
@@ -233,6 +310,21 @@ public class NodeTest {
             }
         });
         assertEquals("<div><p><#text></#text></p></div>", accum.toString());
+    }
+
+    @Test public void forEachNode() {
+        Document doc = Jsoup.parse("<div><p>Hello</p></div><div>There</div><div id=1>Gone<p></div>");
+        doc.forEachNode(node -> {
+            if (node instanceof TextNode) {
+                TextNode textNode = (TextNode) node;
+                if (textNode.text().equals("There")) {
+                    textNode.text("There Now");
+                    textNode.after("<p>Another");
+                }
+            } else if (node.attr("id").equals("1"))
+                node.remove();
+        });
+        assertEquals("<div><p>Hello</p></div><div>There Now<p>Another</p></div>", TextUtil.stripNewlines(doc.body().html()));
     }
 
     @Test public void orphanNodeReturnsNullForSiblingElements() {
@@ -316,5 +408,103 @@ public class NodeTest {
         Attributes attributes = new Attributes();
         attributes.put("value", "bar");
         return attributes;
+    }
+
+    @Test void clonedNodesHaveOwnerDocsAndIndependentSettings() {
+        // https://github.com/jhy/jsoup/issues/763
+        Document doc = Jsoup.parse("<div>Text</div><div>Two</div>");
+        doc.outputSettings().prettyPrint(false);
+        Element div = doc.selectFirst("div");
+        assertNotNull(div);
+        TextNode text = (TextNode) div.childNode(0);
+        assertNotNull(text);
+
+        TextNode textClone = text.clone();
+        Document docClone = textClone.ownerDocument();
+        assertNotNull(docClone);
+        assertFalse(docClone.outputSettings().prettyPrint());
+        assertNotSame(doc, docClone);
+
+        doc.outputSettings().prettyPrint(true);
+        assertTrue(doc.outputSettings().prettyPrint());
+        assertFalse(docClone.outputSettings().prettyPrint());
+        assertEquals(1, docClone.childNodes().size()); // check did not get the second div as the owner's children
+        assertEquals(textClone, docClone.childNode(0)); // note not the head or the body -- not normalized
+    }
+
+    @Test
+    void firstAndLastChild() {
+        String html = "<div>One <span>Two</span> <a href></a> Three</div>";
+        Document doc = Jsoup.parse(html);
+        Element div = doc.selectFirst("div");
+        Element a = doc.selectFirst("a");
+        assertNotNull(div);
+        assertNotNull(a);
+
+        // nodes
+        TextNode first = (TextNode) div.firstChild();
+        assertEquals("One ", first.text());
+
+        TextNode last = (TextNode) div.lastChild();
+        assertEquals(" Three", last.text());
+
+        assertNull(a.firstChild());
+        assertNull(a.lastChild());
+
+        // elements
+        Element firstEl = div.firstElementChild();
+        assertEquals("span", firstEl.tagName());
+
+        Element lastEl = div.lastElementChild();
+        assertEquals("a", lastEl.tagName());
+
+        assertNull(a.firstElementChild());
+        assertNull(a.lastElementChild());
+
+        assertNull(firstEl.firstElementChild());
+        assertNull(firstEl.lastElementChild());
+    }
+
+    @Test void nodeName() {
+        Element div = new Element("DIV");
+        assertEquals("DIV", div.tagName());
+        assertEquals("DIV", div.nodeName());
+        assertEquals("div", div.normalName());
+        assertTrue(div.nameIs("div"));
+
+        TextNode text = new TextNode("Some Text");
+        assertEquals("#text", text.nodeName());
+        assertEquals("#text", text.normalName());
+    }
+
+    @Test void elementIs() {
+        String html = "<div><p>One</p>";
+        Document doc = Jsoup.parse(html);
+
+        Element p = doc.expectFirst("p");
+        TextNode text = (TextNode) p.childNode(0);
+
+        assertTrue(text.parentElementIs("p", NamespaceHtml));
+        assertFalse(text.parentElementIs("div", NamespaceHtml));
+        assertFalse(text.parentElementIs("p", NamespaceXml));
+
+        assertTrue(p.parentElementIs("div", NamespaceHtml));
+        assertTrue(p.elementIs("p", NamespaceHtml));
+        assertTrue(p.nameIs("p"));
+        assertFalse(p.nameIs("P"));
+    }
+
+    @Test void svgElementIs() {
+        String html = "<div><svg><path>1,2,3</path></svg></div>";
+        Document doc = Jsoup.parse(html);
+
+        Element svg = doc.expectFirst("svg");
+        assertTrue(svg.nameIs("svg"));
+        assertFalse(svg.elementIs("svg", NamespaceHtml));
+        assertTrue(svg.elementIs("svg", NamespaceSvg));
+
+        TextNode data = (TextNode) svg.childNode(0).childNode(0);
+        assertTrue(data.parentElementIs("path", NamespaceSvg));
+        assertTrue(data.parentNameIs("path"));
     }
 }

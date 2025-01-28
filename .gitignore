@@ -8,3 +8,6 @@ target/
 .settings/
 *Thrash*
 bin/
+.vscode/
+.java-version
+.DS_Store

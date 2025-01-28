@@ -13,10 +13,10 @@ public class DataNode extends LeafNode {
      @param data data contents
      */
     public DataNode(String data) {
-        value = data;
+        super(data);
     }
 
-    public String nodeName() {
+    @Override public String nodeName() {
         return "#data";
     }
 
@@ -30,7 +30,7 @@ public class DataNode extends LeafNode {
 
     /**
      * Set the data contents of this node.
-     * @param data unencoded data
+     * @param data un-encoded data
      * @return this node, for chaining
      */
     public DataNode setWholeData(String data) {
@@ -38,30 +38,29 @@ public class DataNode extends LeafNode {
         return this;
     }
 
-	void outerHtmlHead(Appendable accum, int depth, Document.OutputSettings out) throws IOException {
-        accum.append(getWholeData()); // data is not escaped in return from data nodes, so " in script, style is plain
+    @Override
+    void outerHtmlHead(Appendable accum, int depth, Document.OutputSettings out) throws IOException {
+        /* For XML output, escape the DataNode in a CData section. The data may contain pseudo-CData content if it was
+        parsed as HTML, so don't double up Cdata. Output in polyglot HTML / XHTML / XML format. */
+        final String data = getWholeData();
+        if (out.syntax() == Document.OutputSettings.Syntax.xml && !data.contains("<![CDATA[")) {
+            if (parentNameIs("script"))
+                accum.append("//<![CDATA[\n").append(data).append("\n//]]>");
+            else if (parentNameIs("style"))
+                accum.append("/*<![CDATA[*/\n").append(data).append("\n/*]]>*/");
+            else
+                accum.append("<![CDATA[").append(data).append("]]>");
+        } else {
+            // In HTML, data is not escaped in the output of data nodes, so < and & in script, style is OK
+            accum.append(getWholeData());
+        }
     }
-
-	void outerHtmlTail(Appendable accum, int depth, Document.OutputSettings out) {}
 
     @Override
-    public String toString() {
-        return outerHtml();
-    }
+    void outerHtmlTail(Appendable accum, int depth, Document.OutputSettings out) {}
 
     @Override
     public DataNode clone() {
         return (DataNode) super.clone();
-    }
-
-    /**
-     Create a new DataNode from HTML encoded data.
-     @param encodedData encoded data
-     @param baseUri bass URI
-     @return new DataNode
-     */
-    public static DataNode createFromEncoded(String encodedData, String baseUri) {
-        String data = Entities.unescape(encodedData);
-        return new DataNode(data);
     }
 }

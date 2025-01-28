@@ -2,6 +2,8 @@ package org.jsoup.nodes;
 
 import org.jsoup.Jsoup;
 import org.jsoup.TextUtil;
+import org.jsoup.helper.ValidationException;
+import org.jsoup.parser.ParseSettings;
 import org.jsoup.parser.Parser;
 import org.jsoup.parser.Tag;
 import org.jsoup.select.Elements;
@@ -10,16 +12,24 @@ import org.jsoup.select.NodeFilter;
 import org.jsoup.select.NodeVisitor;
 import org.jsoup.select.QueryParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
+import static org.jsoup.nodes.NodeIteratorTest.assertIterates;
+import static org.jsoup.nodes.NodeIteratorTest.trackSeen;
+import static org.jsoup.select.SelectorTest.assertSelectedOwnText;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -27,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
  @author Jonathan Hedley */
 public class ElementTest {
-    private String reference = "<div id=div1><p>Hello</p><p>Another <b>element</b></p><div id=div2><img src=foo.png></div></div>";
+    private final String reference = "<div id=div1><p>Hello</p><p>Another <b>element</b></p><div id=div2><img src=foo.png></div></div>";
 
     private static void validateScriptContents(String src, Element el) {
         assertEquals("", el.text()); // it's not text
@@ -151,6 +161,14 @@ public class ElementTest {
         assertEquals("<pre><code><span><b>code\n\ncode</b></span></code></pre>", doc.body().html());
     }
 
+    @Test void doesNotWrapBlocksInPre() {
+        // https://github.com/jhy/jsoup/issues/1891
+        String h = "<pre><span><foo><div>TEST\n TEST</div></foo></span></pre>";
+        Document doc = Jsoup.parse(h);
+        assertEquals("TEST\n TEST", doc.wholeText());
+        assertEquals(h, doc.body().html());
+    }
+
     @Test
     public void testBrHasSpace() {
         Document doc = Jsoup.parse("<p>Hello<br>there</p>");
@@ -159,6 +177,27 @@ public class ElementTest {
 
         doc = Jsoup.parse("<p>Hello <br> there</p>");
         assertEquals("Hello there", doc.text());
+    }
+
+    @Test
+    public void testBrHasSpaceCaseSensitive() {
+        Document doc = Jsoup.parse("<p>Hello<br>there<BR>now</p>", Parser.htmlParser().settings(ParseSettings.preserveCase));
+        assertEquals("Hello there now", doc.text());
+        assertEquals("Hello there now", doc.select("p").first().ownText());
+
+        doc = Jsoup.parse("<p>Hello <br> there <BR> now</p>");
+        assertEquals("Hello there now", doc.text());
+    }
+
+    @Test public void textHasSpacesAfterBlock() {
+        Document doc = Jsoup.parse("<div>One</div><div>Two</div><span>Three</span><p>Fou<i>r</i></p>");
+        String text = doc.text();
+        String wholeText = doc.wholeText();
+
+        assertEquals("One Two Three Four", text);
+        assertEquals("OneTwoThreeFour",wholeText);
+
+        assertEquals("OneTwo",Jsoup.parse("<span>One</span><span>Two</span>").text());
     }
 
     @Test
@@ -173,6 +212,28 @@ public class ElementTest {
         assertEquals("Hello  \n  there", doc.wholeText());
     }
 
+    @Test void wholeTextRuns() {
+        Document doc = Jsoup.parse("<div><p id=1></p><p id=2> </p><p id=3>.  </p>");
+
+        Element p1 = doc.expectFirst("#1");
+        Element p2 = doc.expectFirst("#2");
+        Element p3 = doc.expectFirst("#3");
+
+        assertEquals("", p1.wholeText());
+        assertEquals(" ", p2.wholeText());
+        assertEquals(".  ", p3.wholeText());
+    }
+
+    @Test void buttonTextHasSpace() {
+        // https://github.com/jhy/jsoup/issues/2105
+        Document doc = Jsoup.parse("<html><button>Reply</button><button>All</button></html>");
+        String text = doc.body().text();
+        String wholetext = doc.body().wholeText();
+
+        assertEquals("Reply All", text);
+        assertEquals("ReplyAll", wholetext);
+    }
+
     @Test
     public void testGetSiblings() {
         Document doc = Jsoup.parse("<div><p>Hello<p id=1>there<p>this<p>is<p>an<p id=last>element</div>");
@@ -182,6 +243,28 @@ public class ElementTest {
         assertEquals("this", p.nextElementSibling().text());
         assertEquals("Hello", p.firstElementSibling().text());
         assertEquals("element", p.lastElementSibling().text());
+        assertNull(p.lastElementSibling().nextElementSibling());
+        assertNull(p.firstElementSibling().previousElementSibling());
+    }
+
+    @Test public void nextElementSibling() {
+        Document doc = Jsoup.parse("<p>One</p>Two<p>Three</p>");
+        Element el = doc.expectFirst("p");
+        assertNull(el.previousElementSibling());
+        Element next = el.nextElementSibling();
+        assertNotNull(next);
+        assertEquals("Three", next.text());
+        assertNull(next.nextElementSibling());
+    }
+
+    @Test public void prevElementSibling() {
+        Document doc = Jsoup.parse("<p>One</p>Two<p>Three</p>");
+        Element el = doc.expectFirst("p:contains(Three)");
+        assertNull(el.nextElementSibling());
+        Element prev = el.previousElementSibling();
+        assertNotNull(prev);
+        assertEquals("One", prev.text());
+        assertNull(prev.previousElementSibling());
     }
 
     @Test
@@ -207,7 +290,7 @@ public class ElementTest {
     @Test
     public void testFirstAndLastSiblings() {
         Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three");
-        Element div = doc.selectFirst("div");
+        Element div = doc.expectFirst("div");
         Element one = div.child(0);
         Element two = div.child(1);
         Element three = div.child(2);
@@ -216,6 +299,8 @@ public class ElementTest {
         assertSame(one, two.firstElementSibling());
         assertSame(three, three.lastElementSibling());
         assertSame(three, two.lastElementSibling());
+        assertNull(one.previousElementSibling());
+        assertNull(three.nextElementSibling());
     }
 
     @Test
@@ -229,6 +314,10 @@ public class ElementTest {
         assertEquals("div", parents.get(1).tagName());
         assertEquals("body", parents.get(2).tagName());
         assertEquals("html", parents.get(3).tagName());
+
+        Element orphan = new Element("p");
+        Elements none = orphan.parents();
+        assertEquals(0, none.size());
     }
 
     @Test
@@ -419,6 +508,38 @@ public class ElementTest {
         assertEquals("<html>\n<head></head>\n<body>\n<div>\n<p>Hello there</p>\n</div>\n</body>\n</html>", doc.html());
     }
 
+    @Test void testIndentLevel() {
+        // deep to test default and extended max
+        StringBuilder divs = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            divs.append("<div>");
+        }
+        divs.append("Foo");
+        Document doc = Jsoup.parse(divs.toString());
+        Document.OutputSettings settings = doc.outputSettings();
+
+        int defaultMax = 30;
+        assertEquals(defaultMax, settings.maxPaddingWidth());
+        String html = doc.html();
+        assertTrue(html.contains("                              <div>\n" +
+            "                              Foo\n" +
+            "                              </div>"));
+
+        settings.maxPaddingWidth(32);
+        assertEquals(32, settings.maxPaddingWidth());
+        html = doc.html();
+        assertTrue(html.contains("                                <div>\n" +
+            "                                Foo\n" +
+            "                                </div>"));
+
+        settings.maxPaddingWidth(-1);
+        assertEquals(-1, settings.maxPaddingWidth());
+        html = doc.html();
+        assertTrue(html.contains("                                         <div>\n" +
+            "                                          Foo\n" +
+            "                                         </div>"));
+    }
+
     @Test
     public void testNotPretty() {
         Document doc = Jsoup.parse("<div>   \n<p>Hello\n there\n</p></div>");
@@ -481,7 +602,7 @@ public class ElementTest {
     public void testNoIndentOnScriptAndStyle() {
         // don't newline+indent closing </script> and </style> tags
         Document doc = Jsoup.parse("<script>one\ntwo</script>\n<style>three\nfour</style>");
-        assertEquals("<script>one\ntwo</script> \n<style>three\nfour</style>", doc.head().html());
+        assertEquals("<script>one\ntwo</script>\n<style>three\nfour</style>", doc.head().html());
     }
 
     @Test
@@ -489,7 +610,7 @@ public class ElementTest {
         Document doc = Jsoup.parse("<title>Hello there</title> <div><p>Hello</p><p>there</p></div> <div>Another</div>");
         assertEquals("<title>Hello there</title>", doc.select("title").first().outerHtml());
         assertEquals("<div>\n <p>Hello</p>\n <p>there</p>\n</div>", doc.select("div").first().outerHtml());
-        assertEquals("<div>\n <p>Hello</p>\n <p>there</p>\n</div> \n<div>\n Another\n</div>", doc.select("body").first().html());
+        assertEquals("<div>\n <p>Hello</p>\n <p>there</p>\n</div>\n<div>\n Another\n</div>", doc.select("body").first().html());
     }
 
     @Test
@@ -578,6 +699,7 @@ public class ElementTest {
         Document doc = Jsoup.parse("<div id=1><p>Hello</p></div>");
         Element div = doc.getElementById("1");
         div.appendText(" there & now >");
+        assertEquals ("Hello there & now >", div.text());
         assertEquals("<p>Hello</p> there &amp; now &gt;", TextUtil.stripNewlines(div.html()));
     }
 
@@ -634,6 +756,20 @@ public class ElementTest {
         for (int i = 0; i < ps.size(); i++) {
             assertEquals(i, ps.get(i).siblingIndex);
         }
+    }
+
+    @Test void prependNodes() {
+        Document doc = Jsoup.parse("<div id=1><p>Hello</p></div>");
+        Element p = doc.expectFirst("p");
+        p.prepend("Text <!-- comment --> ");
+        assertEquals("Text <!-- comment --> Hello", TextUtil.stripNewlines(p.html()));
+    }
+
+    @Test void appendNodes() {
+        Document doc = Jsoup.parse("<div id=1><p>Hello</p></div>");
+        Element p = doc.expectFirst("p");
+        p.append(" Text <!-- comment -->");
+        assertEquals("Hello Text <!-- comment -->", TextUtil.stripNewlines(p.html()));
     }
 
     @Test
@@ -822,7 +958,10 @@ public class ElementTest {
         Element p = doc.select("p").get(1);
         Element clone = p.clone();
 
-        assertNull(clone.parent()); // should be orphaned
+        assertNotNull(clone.parentNode); // should be a cloned document just containing this clone
+        assertEquals(1, clone.parentNode.childNodeSize());
+        assertSame(clone.ownerDocument(), clone.parentNode);
+
         assertEquals(0, clone.siblingIndex);
         assertEquals(1, p.siblingIndex);
         assertNotNull(p.parent());
@@ -1106,6 +1245,50 @@ public class ElementTest {
         assertSame(divA, doc.select(divA.cssSelector()).first());
         assertSame(divB, doc.select(divB.cssSelector()).first());
         assertSame(divC, doc.select(divC.cssSelector()).first());
+    }
+
+    @Test public void cssSelectorEscaped() {
+        // https://github.com/jhy/jsoup/issues/1742
+        Document doc = Jsoup.parse("<p\\p>One</p\\p> <p id='one.two'>Two</p> <p class='one.two:three/four'>Three</p>");
+        Element one = doc.expectFirst("p\\\\p");
+        Elements ps = doc.select("p");
+        Element two = ps.get(0);
+        Element three = ps.get(1);
+
+        String oneSelect = one.cssSelector();
+        assertEquals("html > body > p\\\\p", oneSelect);
+        assertEquals(one, doc.expectFirst(oneSelect));
+
+        String twoSelect = two.cssSelector();
+        assertEquals("#one\\.two", twoSelect);
+        assertEquals(two, doc.expectFirst(twoSelect));
+
+        String threeSelect = three.cssSelector();
+        assertEquals("html > body > p.one\\.two\\:three\\/four", threeSelect);
+        assertEquals(three, doc.expectFirst(threeSelect));
+    }
+
+    @Test public void cssEscapedAmp() {
+        Document doc = Jsoup.parse("<p class='\\&'>One</p>");
+        Element one = doc.expectFirst(".\\\\\\&"); // tested matches js querySelector
+        assertEquals("One", one.text());
+
+        String q = one.cssSelector();
+        assertEquals("html > body > p.\\\\\\&", q);
+        assertEquals(one, doc.expectFirst(q));
+    }
+
+    @Test public void cssSelectorEscapedClass() {
+        // example in https://github.com/jhy/jsoup/issues/838
+        String html = "<div class='B\\&W\\?'><div class=test>Text</div></div>";
+        Document parse = Jsoup.parse(html);
+        Element el = parse.expectFirst(".test");
+        assertEquals("Text", el.text());
+
+        String q = el.cssSelector();
+        assertEquals("html > body > div.B\\\\\\&W\\\\\\? > div.test", q);
+        Element found = parse.expectFirst(q);
+        assertEquals(found, el);
     }
 
     @Test
@@ -1736,6 +1919,7 @@ public class ElementTest {
     public void testTraverse() {
         Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three");
         Element div = doc.selectFirst("div");
+        assertNotNull(div);
         final AtomicInteger counter = new AtomicInteger(0);
 
         Element div2 = div.traverse(new NodeVisitor() {
@@ -1755,11 +1939,24 @@ public class ElementTest {
         assertEquals(div2, div);
     }
 
-    @Test
-    public void voidTestFilterCallReturnsElement() {
-        // doesn't actually test the filter so much as the return type for Element. See node.nodeFilter for an acutal test
+    @Test void testTraverseLambda() {
         Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three");
         Element div = doc.selectFirst("div");
+        assertNotNull(div);
+        final AtomicInteger counter = new AtomicInteger(0);
+
+        Element div2 = div.traverse((node, depth) -> counter.incrementAndGet());
+
+        assertEquals(7, counter.get());
+        assertEquals(div2, div);
+    }
+
+    @Test
+    public void testFilterCallReturnsElement() {
+        // doesn't actually test the filter so much as the return type for Element. See node.nodeFilter for an actual test
+        Document doc = Jsoup.parse("<div><p>One<p>Two<p>Three");
+        Element div = doc.selectFirst("div");
+        assertNotNull(div);
         Element div2 = div.filter(new NodeFilter() {
             @Override
             public FilterResult head(Node node, int depth) {
@@ -1773,6 +1970,28 @@ public class ElementTest {
         });
 
         assertSame(div, div2);
+    }
+
+    @Test void testFilterAsLambda() {
+        Document doc = Jsoup.parse("<div><p>One<p id=2>Two<p>Three");
+        doc.filter((node, depth) -> node.attr("id").equals("2")
+            ? NodeFilter.FilterResult.REMOVE
+            : NodeFilter.FilterResult.CONTINUE);
+
+        assertEquals("<div><p>One</p><p>Three</p></div>", TextUtil.stripNewlines(doc.body().html()));
+    }
+
+    @Test void testForEach() {
+        Document doc = Jsoup.parse("<div><p>Hello</p></div><div>There</div><div id=1>Gone<p></div>");
+        doc.forEach(el -> {
+            if (el.id().equals("1"))
+                el.remove();
+            else if (el.text().equals("There")) {
+                el.text("There Now");
+                el.append("<p>Another</p>");
+            }
+        });
+        assertEquals("<div><p>Hello</p></div><div>There Now<p>Another</p></div>", TextUtil.stripNewlines(doc.body().html()));
     }
 
     @Test
@@ -2038,5 +2257,760 @@ public class ElementTest {
         assertEquals(0, els.size());
         els.add(new Element("a"));
         assertEquals(1, els.size());
+    }
+
+    @Test public void attributeSizeDoesNotAutoVivify() {
+        Document doc = Jsoup.parse("<p></p>");
+        Element p = doc.selectFirst("p");
+        assertNotNull(p);
+        assertFalse(p.hasAttributes());
+        assertEquals(0, p.attributesSize());
+        assertFalse(p.hasAttributes());
+
+        p.attr("foo", "bar");
+        assertEquals(1, p.attributesSize());
+        assertTrue(p.hasAttributes());
+
+        p.removeAttr("foo");
+        assertEquals(0, p.attributesSize());
+    }
+
+    @Test void clonedElementsHaveOwnerDocsAndIndependentSettings() {
+        // https://github.com/jhy/jsoup/issues/763
+        Document doc = Jsoup.parse("<div>Text</div><div>Two</div>");
+        doc.outputSettings().prettyPrint(false);
+        Element div = doc.selectFirst("div");
+        assertNotNull(div);
+        Node text = div.childNode(0);
+        assertNotNull(text);
+
+        Element divClone = div.clone();
+        Document docClone = divClone.ownerDocument();
+        assertNotNull(docClone);
+        assertFalse(docClone.outputSettings().prettyPrint());
+        assertNotSame(doc, docClone);
+        assertSame(docClone, divClone.childNode(0).ownerDocument());
+        // the cloned text has same owner doc as the cloned div
+
+        doc.outputSettings().prettyPrint(true);
+        assertTrue(doc.outputSettings().prettyPrint());
+        assertFalse(docClone.outputSettings().prettyPrint());
+        assertEquals(1, docClone.children().size()); // check did not get the second div as the owner's children
+        assertEquals(divClone, docClone.child(0)); // note not the head or the body -- not normalized
+    }
+
+    private static Stream<Document.OutputSettings> testOutputSettings() {
+        return Stream.of(
+            new Document.OutputSettings().prettyPrint(true).indentAmount(4),
+            new Document.OutputSettings().prettyPrint(true).indentAmount(1),
+            new Document.OutputSettings().prettyPrint(true).indentAmount(4).outline(true),
+            new Document.OutputSettings().prettyPrint(false)
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("testOutputSettings")
+    void prettySerializationRoundTrips(Document.OutputSettings settings) {
+        // https://github.com/jhy/jsoup/issues/1688
+        // tests that repeated html() and parse() does not accumulate errant spaces / newlines
+        Document doc = Jsoup.parse("<div>\nFoo\n<p>\nBar\nqux</p></div>\n<script>\n alert('Hello!');\n</script>");
+        doc.outputSettings(settings);
+        String html = doc.html();
+        Document doc2 = Jsoup.parse(html);
+        doc2.outputSettings(settings);
+        String html2 = doc2.html();
+
+        assertEquals(html, html2);
+    }
+
+    @Test void prettyPrintScriptsDoesNotGrowOnRepeat() {
+        Document doc = Jsoup.parse("<div>\nFoo\n<p>\nBar\nqux</p></div>\n<script>\n alert('Hello!');\n</script>");
+        Document.OutputSettings settings = doc.outputSettings();
+        settings
+            .prettyPrint(true)
+            .outline(true)
+            .indentAmount(4)
+            ;
+
+        String html = doc.html();
+        Document doc2 = Jsoup.parse(html);
+        doc2.outputSettings(settings);
+        String html2 = doc2.html();
+        assertEquals(html, html2);
+    }
+
+    @Test void elementBrText() {
+        // testcase for https://github.com/jhy/jsoup/issues/1437
+        String html = "<p>Hello<br>World</p>";
+        Document doc = Jsoup.parse(html);
+        doc.outputSettings().prettyPrint(false); // otherwise html serializes as Hello<br>\n World.
+        Element p = doc.select("p").first();
+        assertNotNull(p);
+        assertEquals(html, p.outerHtml());
+        assertEquals("Hello World", p.text());
+        assertEquals("Hello\nWorld", p.wholeText());
+    }
+
+    @Test void wrapTextAfterBr() {
+        // https://github.com/jhy/jsoup/issues/1858
+        String html = "<p>Hello<br>there<br>now.</p>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<p>Hello<br>\n there<br>\n now.</p>", doc.body().html());
+    }
+
+    @Test void prettyprintBrInBlock() {
+        String html = "<div><br> </div>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<div>\n <br>\n</div>", doc.body().html()); // not div\n br\n \n/div
+    }
+
+    @Test void prettyprintBrWhenNotFirstChild() {
+        // https://github.com/jhy/jsoup/issues/1911
+        String h = "<div><p><br>Foo</p><br></div>";
+        Document doc = Jsoup.parse(h);
+        assertEquals("<div>\n" +
+            " <p><br>\n  Foo</p>\n" +
+            " <br>\n" +
+            "</div>", doc.body().html());
+        // br gets wrapped if in div, but not in p (block vs inline), but always wraps after
+    }
+
+    @Test void preformatFlowsToChildTextNodes() {
+        // https://github.com/jhy/jsoup/issues/1776
+        String html = "<div><pre>One\n<span>\nTwo</span>\n <span>  \nThree</span>\n <span>Four <span>Five</span>\n  Six\n</pre>";
+        Document doc = Jsoup.parse(html);
+        doc.outputSettings().indentAmount(2).prettyPrint(true);
+
+        Element div = doc.selectFirst("div");
+        assertNotNull(div);
+        String actual = div.outerHtml();
+        String expect = "<div>\n" +
+            "  <pre>One\n" +
+            "<span>\n" +
+            "Two</span>\n" +
+            " <span>  \n" +
+            "Three</span>\n" +
+            " <span>Four <span>Five</span>\n" +
+            "  Six\n" +
+            "</span></pre>\n" +
+            "</div>";
+        assertEquals(expect, actual);
+
+        String expectText = "One\n" +
+            "\n" +
+            "Two\n" +
+            "   \n" +
+            "Three\n" +
+            " Four Five\n" +
+            "  Six\n";
+        assertEquals(expectText, div.wholeText());
+
+        String expectOwn = "One\n" +
+            "\n" +
+            " \n" +
+            " ";
+        assertEquals(expectOwn, div.child(0).wholeOwnText());
+    }
+
+    @Test void inlineInBlockShouldIndent() {
+        // was inconsistent between <div>\n<span> and <div><span> - former would print inline, latter would wrap(!)
+        String html = "<div>One <span>Hello</span><span>!</span></div><div>\n<span>There</span></div><div> <span>Now</span></div>";
+        Document doc = Jsoup.parse(html);
+        assertEquals(
+            "<div>\n" +
+                " One <span>Hello</span><span>!</span>\n" +
+                "</div>\n" +
+                "<div>\n" +
+                " <span>There</span>\n" +
+                "</div>\n" +
+                "<div>\n" +
+                " <span>Now</span>\n" +
+                "</div>",
+            doc.body().html());
+    }
+
+    @Test void testExpectFirst() {
+        Document doc = Jsoup.parse("<p>One</p><p>Two <span>Three</span> <span>Four</span>");
+
+        Element span = doc.expectFirst("span");
+        assertEquals("Three", span.text());
+
+        assertNull(doc.selectFirst("div"));
+        boolean threw = false;
+        try {
+            Element div = doc.expectFirst("div");
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        assertTrue(threw);
+    }
+
+    @Test void testExpectFirstMessage() {
+        Document doc = Jsoup.parse("<p>One</p><p>Two <span>Three</span> <span>Four</span>");
+        boolean threw = false;
+        Element p = doc.expectFirst("P");
+        try {
+            Element span = p.expectFirst("span.doesNotExist");
+        } catch (ValidationException e) {
+            threw = true;
+            assertEquals("No elements matched the query 'span.doesNotExist' on element 'p'.", e.getMessage());
+        }
+        assertTrue(threw);
+    }
+
+    @Test void testExpectFirstMessageDoc() {
+        Document doc = Jsoup.parse("<p>One</p><p>Two <span>Three</span> <span>Four</span>");
+        boolean threw = false;
+        Element p = doc.expectFirst("P");
+        try {
+            Element span = doc.expectFirst("span.doesNotExist");
+        } catch (ValidationException e) {
+            threw = true;
+            assertEquals("No elements matched the query 'span.doesNotExist' in the document.", e.getMessage());
+        }
+        assertTrue(threw);
+    }
+
+    @Test void spanRunsMaintainSpace() {
+        // https://github.com/jhy/jsoup/issues/1787
+        Document doc = Jsoup.parse("<p><span>One</span>\n<span>Two</span>\n<span>Three</span></p>");
+        String text = "One Two Three";
+        Element body = doc.body();
+        assertEquals(text, body.text());
+
+        Element p = doc.expectFirst("p");
+        String html = p.html();
+        p.html(html);
+        assertEquals(text, body.text());
+
+        assertEquals("<p><span>One</span> <span>Two</span> <span>Three</span></p>", body.html());
+    }
+
+    @Test void doctypeIsPrettyPrinted() {
+        // resolves underlying issue raised in https://github.com/jhy/jsoup/pull/1664
+        Document doc1 = Jsoup.parse("<!--\nlicense\n-->\n \n<!doctype html>\n<html>");
+        Document doc2 = Jsoup.parse("\n  <!doctype html><html>");
+        Document doc3 = Jsoup.parse("<!doctype html>\n<html>");
+        Document doc4 = Jsoup.parse("\n<!doctype html>\n<html>");
+        Document doc5 = Jsoup.parse("\n<!--\n comment \n -->  <!doctype html>\n<html>");
+        Document doc6 = Jsoup.parse("<!--\n comment \n -->  <!doctype html>\n<html>");
+
+        assertEquals("<!--\nlicense\n-->\n<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc1.html());
+        doc1.outputSettings().prettyPrint(false);
+        assertEquals("<!--\nlicense\n--><!doctype html>\n<html><head></head><body></body></html>", doc1.html());
+        // note that the whitespace between the comment and the doctype is not retained, in Initial state
+
+        assertEquals("<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc2.html());
+        assertEquals("<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc3.html());
+        assertEquals("<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc4.html());
+        assertEquals("<!--\n comment \n -->\n<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc5.html());
+        assertEquals("<!--\n comment \n -->\n<!doctype html>\n<html>\n <head></head>\n <body></body>\n</html>", doc6.html());
+    }
+
+    @Test void textnodeInBlockIndent() {
+        String html ="<div>\n{{ msg }} \n </div>\n<div>\n{{ msg }} \n </div>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<div>\n {{ msg }}\n</div>\n<div>\n {{ msg }}\n</div>", doc.body().html());
+    }
+
+    @Test void stripTrailing() {
+        String html = "<p> This <span>is </span>fine. </p>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<p>This <span>is </span>fine.</p>", doc.body().html());
+    }
+
+    @Test void elementIndentAndSpaceTrims() {
+        String html = "<body><div> <p> One Two </p> <a>  Hello </a><p>\nSome text \n</p>\n </div>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<div>\n" +
+            " <p>One Two</p><a> Hello </a>\n" +
+            " <p>Some text</p>\n" +
+            "</div>", doc.body().html());
+    }
+
+    @Test void divAInlineable() {
+        String html = "<body><div> <a>Text</a>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<div>\n" +
+            " <a>Text</a>\n" +
+            "</div>", doc.body().html());
+    }
+
+    @Test void noDanglingSpaceAfterCustomElement() {
+        // https://github.com/jhy/jsoup/issues/1852
+        String html = "<bar><p/>\n</bar>";
+        Document doc = Jsoup.parse(html);
+        assertEquals("<bar>\n <p></p>\n</bar>", doc.body().html());
+
+        html = "<foo>\n  <bar />\n</foo>";
+        doc = Jsoup.parse(html);
+        assertEquals("<foo>\n <bar />\n</foo>", doc.body().html());
+    }
+
+    @Test void spanInBlockTrims() {
+        String html = "<p>Lorem ipsum</p>\n<span>Thanks</span>";
+        Document doc = Jsoup.parse(html);
+        String outHtml = doc.body().html();
+        assertEquals("<p>Lorem ipsum</p><span>Thanks</span>", outHtml);
+    }
+
+    @Test void replaceWithSelf() {
+        // https://github.com/jhy/jsoup/issues/1843
+        Document doc = Jsoup.parse("<p>One<p>Two");
+        Elements ps = doc.select("p");
+        Element first = ps.first();
+
+        assertNotNull(first);
+        first.replaceWith(first);
+        assertEquals(ps.get(1), first.nextSibling());
+        assertEquals("<p>One</p>\n<p>Two</p>", first.parent().html());
+    }
+
+    @Test void select() {
+        Evaluator eval = QueryParser.parse("div");
+        Document doc = Jsoup.parse(reference);
+        Elements els = doc.select("div");
+        Elements els2 = doc.select(eval);
+        assertEquals(els, els2);
+    }
+
+    @Test void insertChildrenValidation() {
+        Document doc = Jsoup.parse(reference);
+        Element div = doc.expectFirst("div");
+        Throwable ex = assertThrows(ValidationException.class, () -> div.insertChildren(20, new Element("div")));
+        assertEquals("Insert position out of bounds.", ex.getMessage());
+    }
+
+    @Test void cssSelectorNoDoc() {
+        Element el = new Element("div");
+        el.id("one");
+        assertEquals("#one", el.cssSelector());
+    }
+
+    @Test void cssSelectorNoParent() {
+        Element el = new Element("div");
+        assertEquals("div", el.cssSelector());
+    }
+
+    @Test void cssSelectorDoesntStackOverflow() {
+        // https://github.com/jhy/jsoup/issues/2001
+        Element element = new Element("element");
+        Element root = element;
+
+        // Create a long chain of elements
+        for (int i = 0; i < 5000; i++) {
+            Element elem2 = new Element("element" + i);
+            element.appendChild(elem2);
+            element = elem2;
+        }
+
+        String selector = element.cssSelector(); // would overflow in cssSelector parent() recurse
+        Evaluator eval = QueryParser.parse(selector);
+
+        assertEquals(eval.toString(), selector);
+        assertTrue(selector.startsWith("element > element0 >"));
+        assertTrue(selector.endsWith("8 > element4999"));
+
+        Elements elements = root.select(selector); // would overflow in nested And ImmediateParent chain eval
+        assertEquals(1, elements.size());
+        assertEquals(element, elements.first());
+    }
+
+    @Test void cssSelectorWithBracket() {
+        // https://github.com/jhy/jsoup/issues/2146
+        Document doc = Jsoup.parse("<div class='a[foo]'>One</div><div class='b[bar]'>Two</div>");
+        Element div = doc.expectFirst("div");
+        String selector = div.cssSelector();
+        assertEquals("html > body > div.a\\[foo\\]", selector); // would fail with "Did not find balanced marker", consumeSubquery was not handling escapes
+
+        Elements selected = doc.select(selector);
+        assertEquals(1, selected.size());
+        assertEquals(selected.first(), div);
+    }
+
+    @Test void cssSelectorUnbalanced() {
+        // https://github.com/jhy/jsoup/issues/2146
+        Document doc = Jsoup.parse("<div class='a(foo'>One</div><div class='a-bar'>Two</div>");
+        Element div = doc.expectFirst("div");
+        String selector = div.cssSelector();
+        assertEquals("html > body > div.a\\(foo", selector);
+
+        Elements selected = doc.select(selector);
+        assertEquals(1, selected.size());
+        assertEquals(selected.first(), div);
+    }
+
+    @Test void cssSelectorWithAsterisk() {
+        // https://github.com/jhy/jsoup/issues/2169
+        Document doc = Jsoup.parse("<div class='vds-items_flex-end [&amp;_>_*:first-child]:vds-pt_0'>One</div><div class='vds-items_flex-end'>Two</div>");
+        Element div = doc.expectFirst("div");
+        String selector = div.cssSelector();
+        assertEquals("html > body > div.vds-items_flex-end.\\[\\&_\\>_\\*\\:first-child\\]\\:vds-pt_0", selector);
+
+        Elements selected = doc.select(selector);
+        assertEquals(1, selected.size());
+        assertEquals(selected.first(), div);
+    }
+
+    @Test void cssSelectorWithPipe() {
+        // https://github.com/jhy/jsoup/issues/1998
+        Document doc = Jsoup.parse("<div><span class='|'>One</div>");
+        Element span = doc.expectFirst("div span");
+        String selector = span.cssSelector();
+        assertEquals("html > body > div > span.\\|", selector);
+        Elements selected = doc.select(selector);
+        assertSelectedOwnText(selected, "One");
+    }
+
+    @Test void orphanSiblings() {
+        Element el = new Element("div");
+        assertEquals(0, el.siblingElements().size());
+        assertEquals(0, el.nextElementSiblings().size());
+        assertEquals(0, el.previousElementSiblings().size());
+        assertNull(el.nextElementSibling());
+        assertNull(el.previousElementSibling());
+    }
+
+    @Test void getElementsByAttributeStarting() {
+        Document doc = Jsoup.parse("<div data-one=1 data-two=2 id=1><p data-one=3 id=2>Text</div><div>");
+        Elements els = doc.getElementsByAttributeStarting(" data- ");
+        assertEquals(2, els.size());
+        assertEquals("1", els.get(0).id());
+        assertEquals("2", els.get(1).id());
+        assertEquals(0, doc.getElementsByAttributeStarting("not-data").size());
+    }
+
+    @Test void getElementsByAttributeValueNot() {
+        Document doc = Jsoup.parse("<div data-one=1 data-two=2 id=1><p data-one=3 id=2>Text</div><div id=3>");
+        Elements els = doc.body().getElementsByAttributeValueNot("data-one", "1");
+        assertEquals(3, els.size()); // the body, p, and last div
+        assertEquals("body", els.get(0).normalName());
+        assertEquals("2", els.get(1).id());
+        assertEquals("3", els.get(2).id());
+    }
+
+    @Test void getElementsByAttributeValueStarting() {
+        Document doc = Jsoup.parse("<a href=one1></a><a href=one2></a><a href=else</a>");
+        Elements els = doc.getElementsByAttributeValueStarting("href", "one");
+        assertEquals(2, els.size());
+        assertEquals("one1", els.get(0).attr("href"));
+        assertEquals("one2", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsByAttributeValueEnding() {
+        Document doc = Jsoup.parse("<a href=1one></a><a href=2one></a><a href=else</a>");
+        Elements els = doc.getElementsByAttributeValueEnding("href", "one");
+        assertEquals(2, els.size());
+        assertEquals("1one", els.get(0).attr("href"));
+        assertEquals("2one", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsByAttributeValueContaining() {
+        Document doc = Jsoup.parse("<a href=1one></a><a href=2one></a><a href=else</a>");
+        Elements els = doc.getElementsByAttributeValueContaining("href", "on");
+        assertEquals(2, els.size());
+        assertEquals("1one", els.get(0).attr("href"));
+        assertEquals("2one", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsByAttributeValueMatchingPattern() {
+        Document doc = Jsoup.parse("<a href=1one></a><a href=2one></a><a href=else</a>");
+        Elements els = doc.getElementsByAttributeValueMatching("href", Pattern.compile("^\\d\\w+"));
+        assertEquals(2, els.size());
+        assertEquals("1one", els.get(0).attr("href"));
+        assertEquals("2one", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsByAttributeValueMatching() {
+        Document doc = Jsoup.parse("<a href=1one></a><a href=2one></a><a href=else</a>");
+        Elements els = doc.getElementsByAttributeValueMatching("href", "^\\d\\w+");
+        assertEquals(2, els.size());
+        assertEquals("1one", els.get(0).attr("href"));
+        assertEquals("2one", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsByAttributeValueMatchingValidation() {
+        Document doc = Jsoup.parse(reference);
+        Throwable ex = assertThrows(IllegalArgumentException.class,
+            () -> doc.getElementsByAttributeValueMatching("key", "\\x"));
+        assertEquals("Pattern syntax error: \\x", ex.getMessage());
+    }
+
+    @Test void getElementsByIndexEquals() {
+        Document doc = Jsoup.parse("<a href=1one></a><a href=2one></a><a href=else</a>");
+        Elements els = doc.body().getElementsByIndexEquals(1);
+        assertEquals(2, els.size());
+        assertEquals("body", els.get(0).normalName());
+        assertEquals("2one", els.get(1).attr("href"));
+    }
+
+    @Test void getElementsContainingText() {
+        Document doc = Jsoup.parse("<div id=1>One</div><div>Two</div>");
+        Elements els = doc.body().getElementsContainingText("one");
+        assertEquals(2, els.size());
+        assertEquals("body", els.get(0).normalName());
+        assertEquals("1", els.get(1).id());
+    }
+
+    @Test void getElementsContainingOwnText() {
+        Document doc = Jsoup.parse("<div id=1>One</div><div>Two</div>");
+        Elements els = doc.body().getElementsContainingOwnText("one");
+        assertEquals(1, els.size());
+        assertEquals("1", els.get(0).id());
+    }
+
+    @Test void getElementsMatchingTextValidation() {
+        Document doc = Jsoup.parse(reference);
+        Throwable ex = assertThrows(IllegalArgumentException.class,
+            () -> doc.getElementsMatchingText("\\x"));
+        assertEquals("Pattern syntax error: \\x", ex.getMessage());
+    }
+
+    @Test void getElementsMatchingText() {
+        Document doc = Jsoup.parse("<div id=1>One</div><div>Two</div>");
+        Elements els = doc.body().getElementsMatchingText("O\\w+");
+        assertEquals(2, els.size());
+        assertEquals("body", els.get(0).normalName());
+        assertEquals("1", els.get(1).id());
+    }
+
+    @Test void getElementsMatchingOwnText() {
+        Document doc = Jsoup.parse("<div id=1>One</div><div>Two</div>");
+        Elements els = doc.body().getElementsMatchingOwnText("O\\w+");
+        assertEquals(1, els.size());
+        assertEquals("1", els.get(0).id());
+    }
+
+    @Test void getElementsMatchingOwnTextValidation() {
+        Document doc = Jsoup.parse(reference);
+        Throwable ex = assertThrows(IllegalArgumentException.class,
+            () -> doc.getElementsMatchingOwnText("\\x"));
+        assertEquals("Pattern syntax error: \\x", ex.getMessage());
+    }
+
+    @Test void hasText() {
+        Document doc = Jsoup.parse("<div id=1><p><i>One</i></p></div><div id=2>Two</div><div id=3><script>data</script> </div>");
+        assertTrue(doc.getElementById("1").hasText());
+        assertTrue(doc.getElementById("2").hasText());
+        assertFalse(doc.getElementById("3").hasText());
+    }
+
+    @Test void dataInCdataNode() {
+        Element el = new Element("div");
+        CDataNode cdata = new CDataNode("Some CData");
+        el.appendChild(cdata);
+        assertEquals("Some CData", el.data());
+
+        Document parse = Jsoup.parse("One <![CDATA[Hello]]>");
+        assertEquals("Hello", parse.data());
+    }
+
+    @Test void datanodesOutputCdataInXhtml() {
+        String html = "<p><script>1 && 2</script><style>3 && 4</style> 5 &amp;&amp; 6</p>";
+        Document doc = Jsoup.parse(html); // parsed as HTML
+        String out = TextUtil.normalizeSpaces(doc.body().html());
+        assertEquals(html, out);
+        Element scriptEl = doc.expectFirst("script");
+        DataNode scriptDataNode = (DataNode) scriptEl.childNode(0);
+        assertEquals("1 && 2", scriptDataNode.getWholeData());
+
+        doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+        Element p = doc.expectFirst("p");
+        String xml = p.html();
+        assertEquals(
+            "<script>//<![CDATA[\n" +
+                "1 && 2\n" +
+                "//]]></script>\n" +
+                "<style>/*<![CDATA[*/\n" +
+                "3 && 4\n" +
+                "/*]]>*/</style> 5 &amp;&amp; 6",
+            xml);
+
+        Document xmlDoc = Jsoup.parse(xml, Parser.xmlParser());
+        assertEquals(xml, xmlDoc.html());
+        Element scriptXmlEl = xmlDoc.expectFirst("script");
+        TextNode scriptText = (TextNode) scriptXmlEl.childNode(0);
+        assertEquals("//", scriptText.getWholeText());
+        CDataNode scriptCdata = (CDataNode) scriptXmlEl.childNode(1);
+        assertEquals("\n1 && 2\n//", scriptCdata.text());
+    }
+
+    @Test void datanodesOutputExistingCdataInXhtml() {
+        String html = "<p><script>//<![CDATA[\n1 && 2\n//]]></script><style>\n/*<![CDATA[*/3 && 4\n/*]]>*/</style> 5 &amp;&amp; 6</p>";;
+        Document doc = Jsoup.parse(html); // parsed as HTML
+        String out = TextUtil.normalizeSpaces(doc.body().html());
+        assertEquals("<p><script>//<![CDATA[1 && 2//]]></script><style>/*<![CDATA[*/3 && 4/*]]>*/</style> 5 &amp;&amp; 6</p>", out);
+        Element scriptEl = doc.expectFirst("script");
+        DataNode scriptDataNode = (DataNode) scriptEl.childNode(0);
+        assertEquals("//<![CDATA[\n" +
+            "1 && 2\n" +
+            "//]]>", scriptDataNode.getWholeData());
+
+        doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+        Element p = doc.expectFirst("p");
+        String xml = p.html();
+        assertEquals(
+            "<script>//<![CDATA[\n" +
+                "1 && 2\n" +
+                "//]]></script>\n" +
+                "<style>\n" +
+                "/*<![CDATA[*/3 && 4\n" +
+                "/*]]>*/</style> 5 &amp;&amp; 6",
+            xml);
+
+        Document xmlDoc = Jsoup.parse(xml, Parser.xmlParser());
+        assertEquals(xml, xmlDoc.html());
+        Element scriptXmlEl = xmlDoc.expectFirst("script");
+        TextNode scriptText = (TextNode) scriptXmlEl.childNode(0);
+        assertEquals("//", scriptText.getWholeText());
+        CDataNode scriptCdata = (CDataNode) scriptXmlEl.childNode(1);
+        assertEquals("\n1 && 2\n//", scriptCdata.text());
+    }
+
+    @Test void outerHtmlAppendable() {
+        // tests not string builder flow
+        Document doc = Jsoup.parse("<div>One</div>");
+        StringBuffer buffer = new StringBuffer();
+        doc.body().outerHtml(buffer);
+        assertEquals("\n<body>\n <div>\n  One\n </div>\n</body>", buffer.toString());
+        StringBuilder builder = new StringBuilder();
+        doc.body().outerHtml(builder);
+        assertEquals("<body>\n <div>\n  One\n </div>\n</body>", builder.toString());
+    }
+
+    @Test void rubyInline() {
+        String html = "<ruby>T<rp>(</rp><rtc>!</rtc><rt>)</rt></ruby>";
+        Document doc = Jsoup.parse(html);
+        assertEquals(html, doc.body().html());
+    }
+
+    @Test void nestedFormatAsInlinePrintsAsBlock() {
+        // https://github.com/jhy/jsoup/issues/1926
+        String h = "        <table>\n" +
+            "            <tr>\n" +
+            "                <td>\n" +
+            "                    <p style=\"display:inline;\">A</p>\n" +
+            "                    <p style=\"display:inline;\">B</p>\n" +
+            "                </td>\n" +
+            "            </tr>\n" +
+            "        </table>";
+        Document doc = Jsoup.parse(h);
+        String out = doc.body().html();
+        assertEquals("<table>\n" +
+            " <tbody>\n" +
+            "  <tr>\n" +
+            "   <td>\n" +
+            "    <p style=\"display:inline;\">A</p>\n" +
+            "    <p style=\"display:inline;\">B</p></td>\n" +
+            "  </tr>\n" +
+            " </tbody>\n" +
+            "</table>", out);
+        // todo - I would prefer the </td> to wrap down there - but need to reimplement pretty printer to simplify and track indented state
+    }
+
+    @Test void emptyDetachesChildren() {
+        String html = "<div><p>One<p>Two</p>Three</div>";
+        Document doc = Jsoup.parse(html);
+        Element div = doc.expectFirst("div");
+        assertEquals(3, div.childNodeSize());
+
+        List<Node> childNodes = div.childNodes();
+
+        div.empty();
+        assertEquals(0, div.childNodeSize());
+        assertEquals(3, childNodes.size()); // copied before removing
+        for (Node childNode : childNodes) {
+            assertNull(childNode.parentNode);
+        }
+
+        Element p = (Element) childNodes.get(0);
+        assertEquals(p, p.childNode(0).parentNode()); // TextNode "One" still has parent p, as detachment is only on div element
+    }
+
+    @Test void emptyAndAddPreviousChild() {
+        String html = "<div><p>One<p>Two<p>Three</div>";
+        Document doc = Jsoup.parse(html);
+        Element div = doc.expectFirst("div");
+        Element p = div.expectFirst("p");
+        div
+            .empty()
+            .appendChild(p);
+
+        assertEquals("<p>One</p>", div.html());
+    }
+
+    @Test void emptyAndAddPreviousDescendant() {
+        String html = "<header><div><p>One<p>Two<p>Three</div></header>";
+        Document doc = Jsoup.parse(html);
+        Element header = doc.expectFirst("header");
+        Element p = header.expectFirst("p");
+        header
+            .empty()
+            .appendChild(p);
+
+        assertEquals("<p>One</p>", header.html());
+    }
+
+    @Test void xmlSyntaxSetsEscapeMode() {
+        String html = "Foo&nbsp;&Succeeds;";
+        Document doc = Jsoup.parse(html);
+        doc.outputSettings().charset("ascii"); // so we can see the zws
+        assertEquals("Foo&nbsp;&#x227b;", doc.body().html());
+
+        doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+        String out = doc.body().html();
+        assertEquals("Foo&#xa0;&#x227b;", out);
+
+        // can set back if desired
+        doc.outputSettings().escapeMode(Entities.EscapeMode.extended);
+        assertEquals("Foo&nbsp;&succ;", doc.body().html()); // succ is alias for Succeeds, and first hit in entities
+    }
+
+    @Test void attribute() {
+        String html = "<p CLASS='yes'>One</p>";
+        Document doc = Jsoup.parse(html);
+        Element p = doc.expectFirst("p");
+        Attribute attr = p.attribute("class"); // HTML parse lower-cases names
+        assertNotNull(attr);
+        assertEquals("class", attr.getKey());
+        assertEquals("yes", attr.getValue());
+        assertFalse(attr.sourceRange().nameRange().start().isTracked()); // tracking disabled
+
+        assertNull(p.attribute("CLASS")); // no such key
+
+        attr.setKey("CLASS"); // set preserves input case
+        attr.setValue("YES");
+
+        assertEquals("<p CLASS=\"YES\">One</p>", p.outerHtml());
+        assertEquals("CLASS=\"YES\"", attr.html());
+    }
+
+    @Test void testSelectStream() {
+        Document doc = Jsoup.parse("<div>Hello world</div>");
+        Element div = doc.select("div").stream().findFirst().orElse(null);
+
+        assertEquals("Hello world", div.text());
+
+        div = doc.selectStream("div").findFirst().orElse(null);
+
+        assertEquals("Hello world", div.text());
+    }
+
+    @Test void elementIsIterable() {
+        Document doc = Jsoup.parse("<div><a id=1>One</a> Two <a id=2>Three<b>Four</a><a id=3>Five</a></div>");
+        String expect = "div;a#1;a#2;b;b;a#3;"; // elements only, in doc order
+        Element div = doc.expectFirst("div");
+
+        // for each pattern
+        StringBuilder seen = new StringBuilder();
+        for (Element el: div) {
+            trackSeen(el, seen);
+        }
+        assertEquals(expect, seen.toString());
+
+        // iterator
+        seen = new StringBuilder();
+        Iterator<Element> iterator = div.iterator();
+        assertIterates(iterator, expect);
     }
 }

@@ -10,12 +10,12 @@ import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.parser.ParseErrorList;
 import org.jsoup.parser.Parser;
-import org.jsoup.parser.Tag;
 import org.jsoup.select.NodeTraversor;
 import org.jsoup.select.NodeVisitor;
 
 import java.util.List;
 
+import static org.jsoup.internal.SharedConstants.DummyUri;
 
 /**
  The safelist based HTML cleaner. Use to ensure that end-user provided HTML contains only the elements and attributes
@@ -45,16 +45,6 @@ public class Cleaner {
     }
 
     /**
-     Use {@link #Cleaner(Safelist)} instead.
-     @deprecated as of 1.14.1.
-     */
-    @Deprecated
-    public Cleaner(Whitelist whitelist) {
-        Validate.notNull(whitelist);
-        this.safelist = whitelist;
-    }
-
-    /**
      Creates a new, clean document, from the original dirty document, containing only elements allowed by the safelist.
      The original document is not modified. Only elements from the dirty document's <code>body</code> are used. The
      OutputSettings of the original document are cloned into the clean document.
@@ -72,12 +62,23 @@ public class Cleaner {
     }
 
     /**
-     Determines if the input document <b>body</b>is valid, against the safelist. It is considered valid if all the tags and attributes
-     in the input HTML are allowed by the safelist, and that there is no content in the <code>head</code>.
+     Determines if the input document's <b>body</b> is valid, against the safelist. It is considered valid if all the
+     tags and attributes in the input HTML are allowed by the safelist, and that there is no content in the
+     <code>head</code>.
      <p>
-     This method can be used as a validator for user input. An invalid document will still be cleaned successfully
-     using the {@link #clean(Document)} document. If using as a validator, it is recommended to still clean the document
-     to ensure enforced attributes are set correctly, and that the output is tidied.
+     This method is intended to be used in a user interface as a validator for user input. Note that regardless of the
+     output of this method, the input document <b>must always</b> be normalized using a method such as
+     {@link #clean(Document)}, and the result of that method used to store or serialize the document before later reuse
+     such as presentation to end users. This ensures that enforced attributes are set correctly, and that any
+     differences between how a given browser and how jsoup parses the input HTML are normalized.
+     </p>
+     <p>Example:
+     <pre>{@code
+     Document inputDoc = Jsoup.parse(inputHtml);
+     Cleaner cleaner = new Cleaner(Safelist.relaxed());
+     boolean isValid = cleaner.isValid(inputDoc);
+     Document normalizedDoc = cleaner.clean(inputDoc);
+     }</pre>
      </p>
      @param dirtyDocument document to test
      @return true if no tags or attributes need to be removed; false if they do
@@ -91,11 +92,33 @@ public class Cleaner {
             && dirtyDocument.head().childNodes().isEmpty(); // because we only look at the body, but we start from a shell, make sure there's nothing in the head
     }
 
+    /**
+     Determines if the input document's <b>body HTML</b> is valid, against the safelist. It is considered valid if all
+     the tags and attributes in the input HTML are allowed by the safelist.
+     <p>
+     This method is intended to be used in a user interface as a validator for user input. Note that regardless of the
+     output of this method, the input document <b>must always</b> be normalized using a method such as
+     {@link #clean(Document)}, and the result of that method used to store or serialize the document before later reuse
+     such as presentation to end users. This ensures that enforced attributes are set correctly, and that any
+     differences between how a given browser and how jsoup parses the input HTML are normalized.
+     </p>
+     <p>Example:
+     <pre>{@code
+     Document inputDoc = Jsoup.parse(inputHtml);
+     Cleaner cleaner = new Cleaner(Safelist.relaxed());
+     boolean isValid = cleaner.isValidBodyHtml(inputHtml);
+     Document normalizedDoc = cleaner.clean(inputDoc);
+     }</pre>
+     </p>
+     @param bodyHtml HTML fragment to test
+     @return true if no tags or attributes need to be removed; false if they do
+     */
     public boolean isValidBodyHtml(String bodyHtml) {
-        Document clean = Document.createShell("");
-        Document dirty = Document.createShell("");
+        String baseUri = (safelist.preserveRelativeLinks()) ? DummyUri : ""; // fake base URI to allow relative URLs to remain valid
+        Document clean = Document.createShell(baseUri);
+        Document dirty = Document.createShell(baseUri);
         ParseErrorList errorList = ParseErrorList.tracking(1);
-        List<Node> nodes = Parser.parseFragment(bodyHtml, dirty.body(), "", errorList);
+        List<Node> nodes = Parser.parseFragment(bodyHtml, dirty.body(), baseUri, errorList);
         dirty.body().insertChildren(0, nodes);
         int numDiscarded = copySafeNodes(dirty.body(), clean.body());
         return numDiscarded == 0 && errorList.isEmpty();
@@ -114,7 +137,7 @@ public class Cleaner {
             this.destination = destination;
         }
 
-        public void head(Node source, int depth) {
+        @Override public void head(Node source, int depth) {
             if (source instanceof Element) {
                 Element sourceEl = (Element) source;
 
@@ -132,7 +155,7 @@ public class Cleaner {
                 TextNode sourceText = (TextNode) source;
                 TextNode destText = new TextNode(sourceText.getWholeText());
                 destination.appendChild(destText);
-            } else if (source instanceof DataNode && safelist.isSafeTag(source.parent().nodeName())) {
+            } else if (source instanceof DataNode && safelist.isSafeTag(source.parent().normalName())) {
               DataNode sourceData = (DataNode) source;
               DataNode destData = new DataNode(sourceData.getWholeData());
               destination.appendChild(destData);
@@ -141,8 +164,8 @@ public class Cleaner {
             }
         }
 
-        public void tail(Node source, int depth) {
-            if (source instanceof Element && safelist.isSafeTag(source.nodeName())) {
+        @Override public void tail(Node source, int depth) {
+            if (source instanceof Element && safelist.isSafeTag(source.normalName())) {
                 destination = destination.parent(); // would have descended, so pop destination stack
             }
         }
@@ -155,11 +178,12 @@ public class Cleaner {
     }
 
     private ElementMeta createSafeElement(Element sourceEl) {
+        Element dest = sourceEl.shallowClone(); // reuses tag, clones attributes and preserves any user data
         String sourceTag = sourceEl.tagName();
-        Attributes destAttrs = new Attributes();
-        Element dest = new Element(Tag.valueOf(sourceTag), sourceEl.baseUri(), destAttrs);
-        int numDiscarded = 0;
+        Attributes destAttrs = dest.attributes();
+        dest.clearAttributes(); // clear all non-internal attributes, ready for safe copy
 
+        int numDiscarded = 0;
         Attributes sourceAttrs = sourceEl.attributes();
         for (Attribute sourceAttr : sourceAttrs) {
             if (safelist.isSafeAttribute(sourceTag, sourceEl, sourceAttr))
@@ -167,9 +191,20 @@ public class Cleaner {
             else
                 numDiscarded++;
         }
-        Attributes enforcedAttrs = safelist.getEnforcedAttributes(sourceTag);
-        destAttrs.addAll(enforcedAttrs);
 
+
+        Attributes enforcedAttrs = safelist.getEnforcedAttributes(sourceTag);
+        // special case for <a href rel=nofollow>, only apply to external links:
+        if (sourceEl.nameIs("a") && enforcedAttrs.get("rel").equals("nofollow")) {
+            String href = sourceEl.absUrl("href");
+            String sourceBase = sourceEl.baseUri();
+            if (!href.isEmpty() && !sourceBase.isEmpty() && href.startsWith(sourceBase)) { // same site, so don't set the nofollow
+                enforcedAttrs.remove("rel");
+            }
+        }
+
+        destAttrs.addAll(enforcedAttrs);
+        dest.attributes().addAll(destAttrs); // re-attach, if removed in clear
         return new ElementMeta(dest, numDiscarded);
     }
 

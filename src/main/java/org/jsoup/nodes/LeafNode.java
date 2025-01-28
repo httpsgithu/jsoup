@@ -2,13 +2,24 @@ package org.jsoup.nodes;
 
 import org.jsoup.helper.Validate;
 
-import java.util.Collections;
 import java.util.List;
 
-abstract class LeafNode extends Node {
+/**
+ A node that does not hold any children. E.g.: {@link TextNode}, {@link DataNode}, {@link Comment}.
+ */
+public abstract class LeafNode extends Node {
     Object value; // either a string value, or an attribute map (in the rare case multiple attributes are set)
 
-    protected final boolean hasAttributes() {
+    public LeafNode() {
+        value = "";
+    }
+
+    protected LeafNode(String coreValue) {
+        Validate.notNull(coreValue);
+        value = coreValue;
+    }
+
+    @Override protected final boolean hasAttributes() {
         return value instanceof Attributes;
     }
 
@@ -19,12 +30,11 @@ abstract class LeafNode extends Node {
     }
 
     private void ensureAttributes() {
-        if (!hasAttributes()) {
-            Object coreValue = value;
+        if (!hasAttributes()) { // then value is String coreValue
+            String coreValue = (String) value;
             Attributes attributes = new Attributes();
             value = attributes;
-            if (coreValue != null)
-                attributes.put(nodeName(), (String) coreValue);
+            attributes.put(nodeName(), coreValue);
         }
     }
 
@@ -38,9 +48,8 @@ abstract class LeafNode extends Node {
 
     @Override
     public String attr(String key) {
-        Validate.notNull(key);
         if (!hasAttributes()) {
-            return key.equals(nodeName()) ? (String) value : EmptyString;
+            return nodeName().equals(key) ? (String) value : EmptyString;
         }
         return super.attr(key);
     }
@@ -76,7 +85,7 @@ abstract class LeafNode extends Node {
 
     @Override
     public String baseUri() {
-        return hasParent() ? parent().baseUri() : "";
+        return parentNode != null ? parentNode.baseUri() : "";
     }
 
     @Override

@@ -7,14 +7,16 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.DocumentType;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Entities;
+import org.jsoup.nodes.LeafNode;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.nodes.XmlDeclaration;
 
-import javax.annotation.ParametersAreNonnullByDefault;
 import java.io.Reader;
 import java.io.StringReader;
 import java.util.List;
+
+import static org.jsoup.parser.Parser.NamespaceXml;
 
 /**
  * Use the {@code XmlTreeBuilder} when you want to parse XML without any of the HTML DOM rules being applied to the
@@ -24,14 +26,13 @@ import java.util.List;
  * @author Jonathan Hedley
  */
 public class XmlTreeBuilder extends TreeBuilder {
-    ParseSettings defaultSettings() {
+    @Override ParseSettings defaultSettings() {
         return ParseSettings.preserveCase;
     }
 
-    @Override @ParametersAreNonnullByDefault
+    @Override
     protected void initialiseParse(Reader input, String baseUri, Parser parser) {
         super.initialiseParse(input, baseUri, parser);
-        stack.add(doc); // place the document onto the stack. differs from HtmlTreeBuilder (not on stack)
         doc.outputSettings()
             .syntax(Document.OutputSettings.Syntax.xml)
             .escapeMode(Entities.EscapeMode.xhtml)
@@ -46,29 +47,39 @@ public class XmlTreeBuilder extends TreeBuilder {
         return parse(new StringReader(input), baseUri, new Parser(this));
     }
 
+    @Override List<Node> completeParseFragment() {
+        return doc.childNodes();
+    }
+
     @Override
     XmlTreeBuilder newInstance() {
         return new XmlTreeBuilder();
     }
 
+    @Override public String defaultNamespace() {
+        return NamespaceXml;
+    }
+
     @Override
     protected boolean process(Token token) {
+        currentToken = token;
+
         // start tag, end tag, doctype, comment, character, eof
         switch (token.type) {
             case StartTag:
-                insert(token.asStartTag());
+                insertElementFor(token.asStartTag());
                 break;
             case EndTag:
                 popStackToClose(token.asEndTag());
                 break;
             case Comment:
-                insert(token.asComment());
+                insertCommentFor(token.asComment());
                 break;
             case Character:
-                insert(token.asCharacter());
+                insertCharacterFor(token.asCharacter());
                 break;
             case Doctype:
-                insert(token.asDoctype());
+                insertDoctypeFor(token.asDoctype());
                 break;
             case EOF: // could put some normalisation here if desired
                 break;
@@ -78,49 +89,49 @@ public class XmlTreeBuilder extends TreeBuilder {
         return true;
     }
 
-    private void insertNode(Node node) {
-        currentElement().appendChild(node);
-    }
-
-    Element insert(Token.StartTag startTag) {
-        Tag tag = Tag.valueOf(startTag.name(), settings);
-        // todo: wonder if for xml parsing, should treat all tags as unknown? because it's not html.
-        if (startTag.hasAttributes())
+    void insertElementFor(Token.StartTag startTag) {
+        Tag tag = tagFor(startTag.name(), settings);
+        if (startTag.attributes != null)
             startTag.attributes.deduplicate(settings);
 
         Element el = new Element(tag, null, settings.normalizeAttributes(startTag.attributes));
-        insertNode(el);
+        currentElement().appendChild(el);
+        push(el);
+
         if (startTag.isSelfClosing()) {
-            if (!tag.isKnownTag()) // unknown tag, remember this is self closing for output. see above.
-                tag.setSelfClosing();
-        } else {
-            stack.add(el);
+            tag.setSelfClosing();
+            pop(); // push & pop ensures onNodeInserted & onNodeClosed
         }
-        return el;
     }
 
-    void insert(Token.Comment commentToken) {
+    void insertLeafNode(LeafNode node) {
+        currentElement().appendChild(node);
+        onNodeInserted(node);
+    }
+
+    void insertCommentFor(Token.Comment commentToken) {
         Comment comment = new Comment(commentToken.getData());
-        Node insert = comment;
+        LeafNode insert = comment;
         if (commentToken.bogus && comment.isXmlDeclaration()) {
             // xml declarations are emitted as bogus comments (which is right for html, but not xml)
             // so we do a bit of a hack and parse the data as an element to pull the attributes out
+            // todo - refactor this to parse more appropriately
             XmlDeclaration decl = comment.asXmlDeclaration(); // else, we couldn't parse it as a decl, so leave as a comment
             if (decl != null)
                 insert = decl;
         }
-        insertNode(insert);
+        insertLeafNode(insert);
     }
 
-    void insert(Token.Character token) {
+    void insertCharacterFor(Token.Character token) {
         final String data = token.getData();
-        insertNode(token.isCData() ? new CDataNode(data) : new TextNode(data));
+        insertLeafNode(token.isCData() ? new CDataNode(data) : new TextNode(data));
     }
 
-    void insert(Token.Doctype d) {
-        DocumentType doctypeNode = new DocumentType(settings.normalizeTag(d.getName()), d.getPublicIdentifier(), d.getSystemIdentifier());
-        doctypeNode.setPubSysKey(d.getPubSysKey());
-        insertNode(doctypeNode);
+    void insertDoctypeFor(Token.Doctype token) {
+        DocumentType doctypeNode = new DocumentType(settings.normalizeTag(token.getName()), token.getPublicIdentifier(), token.getSystemIdentifier());
+        doctypeNode.setPubSysKey(token.getPubSysKey());
+        insertLeafNode(doctypeNode);
     }
 
     /**
@@ -129,11 +140,15 @@ public class XmlTreeBuilder extends TreeBuilder {
      *
      * @param endTag tag to close
      */
-    private void popStackToClose(Token.EndTag endTag) {
+    protected void popStackToClose(Token.EndTag endTag) {
+        // like in HtmlTreeBuilder - don't scan up forever for very (artificially) deeply nested stacks
         String elName = settings.normalizeTag(endTag.tagName);
         Element firstFound = null;
 
-        for (int pos = stack.size() -1; pos >= 0; pos--) {
+        final int bottom = stack.size() - 1;
+        final int upper = bottom >= maxQueueDepth ? bottom - maxQueueDepth : 0;
+
+        for (int pos = stack.size() -1; pos >= upper; pos--) {
             Element next = stack.get(pos);
             if (next.nodeName().equals(elName)) {
                 firstFound = next;
@@ -144,21 +159,11 @@ public class XmlTreeBuilder extends TreeBuilder {
             return; // not found, skip
 
         for (int pos = stack.size() -1; pos >= 0; pos--) {
-            Element next = stack.get(pos);
-            stack.remove(pos);
-            if (next == firstFound)
+            Element next = pop();
+            if (next == firstFound) {
                 break;
+            }
         }
     }
-
-
-    List<Node> parseFragment(String inputFragment, String baseUri, Parser parser) {
-        initialiseParse(new StringReader(inputFragment), baseUri, parser);
-        runParser();
-        return doc.childNodes();
-    }
-
-    List<Node> parseFragment(String inputFragment, Element context, String baseUri, Parser parser) {
-        return parseFragment(inputFragment, baseUri, parser);
-    }
+    private static final int maxQueueDepth = 256; // an arbitrary tension point between real XML and crafted pain
 }

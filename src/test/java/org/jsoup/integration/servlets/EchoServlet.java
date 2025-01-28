@@ -22,25 +22,17 @@ import static org.jsoup.nodes.Entities.escape;
 
 public class EchoServlet extends BaseServlet {
     public static final String CodeParam = "code";
-    public static final String Url = TestServer.map(EchoServlet.class);
     private static final int DefaultCode = HttpServletResponse.SC_OK;
-
-    @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        doIt(req, res);
+    public static final String Url;
+    public static final String TlsUrl;
+    static {
+        TestServer.ServletUrls urls = TestServer.map(EchoServlet.class);
+        Url = urls.url;
+        TlsUrl = urls.tlsUrl;
     }
 
     @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        doIt(req, res);
-    }
-
-    @Override
-    protected void doPut(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
-        doIt(req, res);
-    }
-
-    private void doIt(HttpServletRequest req, HttpServletResponse res) throws IOException, ServletException {
+    protected void doIt(HttpServletRequest req, HttpServletResponse res) throws IOException, ServletException {
         int intCode = DefaultCode;
         String code = req.getHeader(CodeParam);
         if (code != null)
@@ -67,6 +59,7 @@ public class EchoServlet extends BaseServlet {
         // some get items
         write(w, "Method", req.getMethod());
         write(w, "Request URI", req.getRequestURI());
+        write(w, "Path Info", req.getPathInfo());
         write(w, "Query String", req.getQueryString());
 
         // request headers (why is it an enumeration?)
@@ -97,7 +90,7 @@ public class EchoServlet extends BaseServlet {
 
         // post body
         ByteBuffer byteBuffer = DataUtil.readToByteBuffer(req.getInputStream(), 0);
-        String postData = new String(byteBuffer.array(), StandardCharsets.UTF_8);
+        String postData = new String(byteBuffer.array(), byteBuffer.arrayOffset(), byteBuffer.limit(), StandardCharsets.UTF_8);
         if (!StringUtil.isBlank(postData)) {
             write(w, "Post Data", postData);
         }
@@ -127,7 +120,7 @@ public class EchoServlet extends BaseServlet {
     // allow the servlet to run as a main program, for local test
     public static void main(String[] args) {
         TestServer.start();
-        System.out.println(Url);
+        System.out.println("Listening on " + Url + " and " + TlsUrl);
     }
 
     private static boolean maybeEnableMultipart(HttpServletRequest req) {

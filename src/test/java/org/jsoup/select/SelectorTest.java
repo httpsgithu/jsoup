@@ -7,7 +7,10 @@ import org.jsoup.nodes.Element;
 import org.jsoup.parser.Parser;
 import org.junit.jupiter.api.Test;
 
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,39 +20,79 @@ import static org.junit.jupiter.api.Assertions.*;
  * @author Jonathan Hedley, jonathan@hedley.net
  */
 public class SelectorTest {
+
+    /** Test that the selected elements match exactly the specified IDs. */
+    public static void assertSelectedIds(Elements els, String... ids) {
+        assertNotNull(els);
+        assertEquals(ids.length, els.size(), "Incorrect number of selected elements");
+        for (int i = 0; i < ids.length; i++) {
+            assertEquals(ids[i], els.get(i).id(), "Incorrect content at index");
+        }
+    }
+
+    public static void assertSelectedOwnText(Elements els, String... ownTexts) {
+        assertNotNull(els);
+        assertEquals(ownTexts.length, els.size(), "Incorrect number of selected elements");
+        for (int i = 0; i < ownTexts.length; i++) {
+            assertEquals(ownTexts[i], els.get(i).ownText(), "Incorrect content at index");
+        }
+    }
+
     @Test public void testByTag() {
-        // should be case insensitive
+        // should be case-insensitive
         Elements els = Jsoup.parse("<div id=1><div id=2><p>Hello</p></div></div><DIV id=3>").select("DIV");
-        assertEquals(3, els.size());
-        assertEquals("1", els.get(0).id());
-        assertEquals("2", els.get(1).id());
-        assertEquals("3", els.get(2).id());
+        assertSelectedIds(els, "1", "2", "3");
 
         Elements none = Jsoup.parse("<div id=1><div id=2><p>Hello</p></div></div><div id=3>").select("span");
-        assertEquals(0, none.size());
+        assertTrue(none.isEmpty());
+    }
+
+    @Test public void byEscapedTag() {
+        // tested same result as js document.querySelector
+        Document doc = Jsoup.parse("<p.p>One</p.p> <p\\p>Two</p\\p>");
+
+        Element one = doc.expectFirst("p\\.p");
+        assertEquals("One", one.text());
+
+        Element two = doc.expectFirst("p\\\\p");
+        assertEquals("Two", two.text());
     }
 
     @Test public void testById() {
         Elements els = Jsoup.parse("<div><p id=foo>Hello</p><p id=foo>Foo two!</p></div>").select("#foo");
-        assertEquals(2, els.size());
-        assertEquals("Hello", els.get(0).text());
-        assertEquals("Foo two!", els.get(1).text());
+        assertSelectedOwnText(els, "Hello", "Foo two!");
 
         Elements none = Jsoup.parse("<div id=1></div>").select("#foo");
-        assertEquals(0, none.size());
+        assertTrue(none.isEmpty());
+    }
+
+    @Test public void byEscapedId() {
+        Document doc = Jsoup.parse("<p id='i.d'>One</p> <p id='i\\d'>Two</p> <p id='one-two/three'>Three</p>");
+
+        Element one = doc.expectFirst("#i\\.d");
+        assertEquals("One", one.text());
+
+        Element two = doc.expectFirst("#i\\\\d");
+        assertEquals("Two", two.text());
+
+        Element thr = doc.expectFirst("p#one-two\\/three");
+        assertEquals("Three", thr.text());
     }
 
     @Test public void testByClass() {
         Elements els = Jsoup.parse("<p id=0 class='ONE two'><p id=1 class='one'><p id=2 class='two'>").select("P.One");
-        assertEquals(2, els.size());
-        assertEquals("0", els.get(0).id());
-        assertEquals("1", els.get(1).id());
+        assertSelectedIds(els, "0", "1");
 
         Elements none = Jsoup.parse("<div class='one'></div>").select(".foo");
-        assertEquals(0, none.size());
+        assertTrue(none.isEmpty());
 
-        Elements els2 = Jsoup.parse("<div class='One-Two'></div>").select(".one-two");
-        assertEquals(1, els2.size());
+        Elements els2 = Jsoup.parse("<div class='One-Two' id=1></div>").select(".one-two");
+        assertSelectedIds(els2, "1");
+    }
+
+    @Test public void byEscapedClass() {
+        Document doc = Jsoup.parse("<p class='one.two#three'>One</p>");
+        assertSelectedOwnText(doc.select("p.one\\.two\\#three"), "One");
     }
 
     @Test public void testByClassCaseInsensitive() {
@@ -58,8 +101,7 @@ public class SelectorTest {
         Elements elsFromAttr = Jsoup.parse(html).select("p[class=foo]");
 
         assertEquals(elsFromAttr.size(), elsFromClass.size());
-        assertEquals(3, elsFromClass.size());
-        assertEquals("Two", elsFromClass.get(1).text());
+        assertSelectedOwnText(elsFromClass, "One", "Two", "Three");
     }
 
 
@@ -110,43 +152,38 @@ public class SelectorTest {
     @Test public void testNamespacedTag() {
         Document doc = Jsoup.parse("<div><abc:def id=1>Hello</abc:def></div> <abc:def class=bold id=2>There</abc:def>");
         Elements byTag = doc.select("abc|def");
-        assertEquals(2, byTag.size());
-        assertEquals("1", byTag.first().id());
-        assertEquals("2", byTag.last().id());
+        assertSelectedIds(byTag, "1", "2");
 
         Elements byAttr = doc.select(".bold");
-        assertEquals(1, byAttr.size());
-        assertEquals("2", byAttr.last().id());
+        assertSelectedIds(byAttr, "2");
 
         Elements byTagAttr = doc.select("abc|def.bold");
-        assertEquals(1, byTagAttr.size());
-        assertEquals("2", byTagAttr.last().id());
+        assertSelectedIds(byTagAttr, "2");
 
         Elements byContains = doc.select("abc|def:contains(e)");
-        assertEquals(2, byContains.size());
-        assertEquals("1", byContains.first().id());
-        assertEquals("2", byContains.last().id());
+        assertSelectedIds(byContains, "1", "2");
     }
 
     @Test public void testWildcardNamespacedTag() {
         Document doc = Jsoup.parse("<div><abc:def id=1>Hello</abc:def></div> <abc:def class=bold id=2>There</abc:def>");
         Elements byTag = doc.select("*|def");
-        assertEquals(2, byTag.size());
-        assertEquals("1", byTag.first().id());
-        assertEquals("2", byTag.last().id());
+        assertSelectedIds(byTag, "1", "2");
 
         Elements byAttr = doc.select(".bold");
-        assertEquals(1, byAttr.size());
-        assertEquals("2", byAttr.last().id());
+        assertSelectedIds(byAttr, "2");
 
         Elements byTagAttr = doc.select("*|def.bold");
-        assertEquals(1, byTagAttr.size());
-        assertEquals("2", byTagAttr.last().id());
+        assertSelectedIds(byTagAttr, "2");
 
         Elements byContains = doc.select("*|def:contains(e)");
-        assertEquals(2, byContains.size());
-        assertEquals("1", byContains.first().id());
-        assertEquals("2", byContains.last().id());
+        assertSelectedIds(byContains, "1", "2");
+    }
+
+    @Test public void testNamespacedWildcardTag() {
+        // https://github.com/jhy/jsoup/issues/1811
+        Document doc = Jsoup.parse("<p>One</p> <ac:p id=2>Two</ac:p> <ac:img id=3>Three</ac:img>");
+        Elements byNs = doc.select("ac|*");
+        assertSelectedIds(byNs, "2", "3");
     }
 
     @Test public void testWildcardNamespacedXmlTag() {
@@ -156,22 +193,16 @@ public class SelectorTest {
         );
 
         Elements byTag = doc.select("*|Def");
-        assertEquals(2, byTag.size());
-        assertEquals("1", byTag.first().id());
-        assertEquals("2", byTag.last().id());
+        assertSelectedIds(byTag, "1", "2");
 
         Elements byAttr = doc.select(".bold");
-        assertEquals(1, byAttr.size());
-        assertEquals("2", byAttr.last().id());
+        assertSelectedIds(byAttr, "2");
 
         Elements byTagAttr = doc.select("*|Def.bold");
-        assertEquals(1, byTagAttr.size());
-        assertEquals("2", byTagAttr.last().id());
+        assertSelectedIds(byTagAttr, "2");
 
         Elements byContains = doc.select("*|Def:contains(e)");
-        assertEquals(2, byContains.size());
-        assertEquals("1", byContains.first().id());
-        assertEquals("2", byContains.last().id());
+        assertSelectedIds(byContains, "1", "2");
     }
 
     @Test public void testWildCardNamespacedCaseVariations() {
@@ -209,18 +240,13 @@ public class SelectorTest {
     @Test public void testByAttributeRegex() {
         Document doc = Jsoup.parse("<p><img src=foo.png id=1><img src=bar.jpg id=2><img src=qux.JPEG id=3><img src=old.gif><img></p>");
         Elements imgs = doc.select("img[src~=(?i)\\.(png|jpe?g)]");
-        assertEquals(3, imgs.size());
-        assertEquals("1", imgs.get(0).id());
-        assertEquals("2", imgs.get(1).id());
-        assertEquals("3", imgs.get(2).id());
+        assertSelectedIds(imgs, "1", "2", "3");
     }
 
     @Test public void testByAttributeRegexCharacterClass() {
         Document doc = Jsoup.parse("<p><img src=foo.png id=1><img src=bar.jpg id=2><img src=qux.JPEG id=3><img src=old.gif id=4></p>");
         Elements imgs = doc.select("img[src~=[o]]");
-        assertEquals(2, imgs.size());
-        assertEquals("1", imgs.get(0).id());
-        assertEquals("4", imgs.get(1).id());
+        assertSelectedIds(imgs, "1", "4");
     }
 
     @Test public void testByAttributeRegexCombined() {
@@ -372,6 +398,19 @@ public class SelectorTest {
         String h = "<div id=1><p>Hello<p><b>there</b></p></div><div id=2><span>Hi</span></div>";
         Document doc = Jsoup.parse(h);
         Elements divChilds = doc.select("div > *");
+        assertEquals(3, divChilds.size());
+        assertEquals("p", divChilds.get(0).tagName());
+        assertEquals("p", divChilds.get(1).tagName());
+        assertEquals("span", divChilds.get(2).tagName());
+    }
+
+    @Test public void streamParentChildStar() {
+        String h = "<div id=1><p>Hello<p><b>there</b></p></div><div id=2><span>Hi</span></div>";
+        Document doc = Jsoup.parse(h);
+
+        List<Element> divChilds = doc.selectStream("div > *")
+            .collect(Collectors.toList());
+
         assertEquals(3, divChilds.size());
         assertEquals("p", divChilds.get(0).tagName());
         assertEquals("p", divChilds.get(1).tagName());
@@ -546,7 +585,7 @@ public class SelectorTest {
         assertEquals("2", divs3.get(2).id());
 
         Elements els1 = doc.body().select(":has(p)");
-        assertEquals(3, els1.size()); // body, div, dib
+        assertEquals(3, els1.size()); // body, div, div
         assertEquals("body", els1.first().tagName());
         assertEquals("0", els1.get(1).id());
         assertEquals("2", els1.get(2).id());
@@ -574,6 +613,21 @@ public class SelectorTest {
         assertEquals(1, divs.size());
         assertEquals("div", divs.first().tagName());
         assertEquals("Two", divs.first().text());
+    }
+
+    @Test public void testHasSibling() {
+        // https://github.com/jhy/jsoup/issues/2137
+        Document doc = Jsoup.parse("<h1 id=1>One</h1> <h2>Two</h2> <h1>Three</h1>");
+        Elements els = doc.select("h1:has(+h2)");
+        assertSelectedIds(els, "1");
+
+        els = doc.select("h1:has(~h1)");
+        assertSelectedIds(els, "1");
+
+        // nested with sibling
+        doc = Jsoup.parse("<div id=1><p><i>One</i><i>Two</p><p><i>Three</p></div> <div><p><i>Four</div>");
+        els = doc.select("div:has(p:has(i:has(~i)))");
+        assertSelectedIds(els, "1");
     }
 
     @MultiLocaleTest
@@ -615,6 +669,46 @@ public class SelectorTest {
         Elements ps2 = doc.select("p:contains(this is bad\\))");
         assertEquals(1, ps2.size());
         assertEquals("2", ps2.first().id());
+    }
+
+    @Test void containsWholeText() {
+        Document doc = Jsoup.parse("<div><p> jsoup\n The <i>HTML</i> Parser</p><p>jsoup The HTML Parser</div>");
+        Elements ps = doc.select("p");
+
+        Elements es1 = doc.select("p:containsWholeText( jsoup\n The HTML Parser)");
+        Elements es2 = doc.select("p:containsWholeText(jsoup The HTML Parser)");
+        assertEquals(1, es1.size());
+        assertEquals(1, es2.size());
+        assertEquals(ps.get(0), es1.first());
+        assertEquals(ps.get(1), es2.first());
+
+        assertEquals(0, doc.select("div:containsWholeText(jsoup the html parser)").size());
+        assertEquals(0, doc.select("div:containsWholeText(jsoup\n the html parser)").size());
+
+        doc = Jsoup.parse("<div><p></p><p> </p><p>.  </p>");
+        Elements blanks = doc.select("p:containsWholeText(  )");
+        assertEquals(1, blanks.size());
+        assertEquals(".  ", blanks.first().wholeText());
+    }
+
+    @Test void containsWholeOwnText() {
+        Document doc = Jsoup.parse("<div><p> jsoup\n The <i>HTML</i> Parser</p><p>jsoup The HTML Parser<br></div>");
+        Elements ps = doc.select("p");
+
+        Elements es1 = doc.select("p:containsWholeOwnText( jsoup\n The  Parser)");
+        Elements es2 = doc.select("p:containsWholeOwnText(jsoup The HTML Parser\n)");
+        assertEquals(1, es1.size());
+        assertEquals(1, es2.size());
+        assertEquals(ps.get(0), es1.first());
+        assertEquals(ps.get(1), es2.first());
+
+        assertEquals(0, doc.select("div:containsWholeOwnText(jsoup the html parser)").size());
+        assertEquals(0, doc.select("div:containsWholeOwnText(jsoup\n the  parser)").size());
+
+        doc = Jsoup.parse("<div><p></p><p> </p><p>.  </p>");
+        Elements blanks = doc.select("p:containsWholeOwnText(  )");
+        assertEquals(1, blanks.size());
+        assertEquals(".  ", blanks.first().wholeText());
     }
 
     @MultiLocaleTest
@@ -668,6 +762,43 @@ public class SelectorTest {
         assertEquals("1", p1.first().id());
 
         assertEquals(0, doc.select("p:matchesOwn(there)").size());
+    }
+
+    @Test public void matchesWholeText() {
+        Document doc = Jsoup.parse("<p id=1>Hello <b>there</b>\n now</p><p id=2> </p><p id=3></p>");
+
+        Elements p1 = doc.select("p:matchesWholeText((?i)hello there\n now)");
+        assertEquals(1, p1.size());
+        assertEquals("1", p1.first().id());
+
+        assertEquals(1, doc.select("p:matchesWholeText(there\n now)").size());
+        assertEquals(0, doc.select("p:matchesWholeText(There\n now)").size());
+
+        Elements p2 = doc.select("p:matchesWholeText(^\\s+$)");
+        assertEquals(1, p2.size());
+        assertEquals("2", p2.first().id());
+
+        Elements p3 = doc.select("p:matchesWholeText(^$)");
+        assertEquals(1, p3.size());
+        assertEquals("3", p3.first().id());
+    }
+
+    @Test public void matchesWholeOwnText() {
+        Document doc = Jsoup.parse("<p id=1>Hello <b>there</b>\n now</p><p id=2> </p><p id=3><i>Text</i></p>");
+
+        Elements p1 = doc.select("p:matchesWholeOwnText((?i)hello \n now)");
+        assertEquals(1, p1.size());
+        assertEquals("1", p1.first().id());
+
+        assertEquals(0, doc.select("p:matchesWholeOwnText(there\n now)").size());
+
+        Elements p2 = doc.select("p:matchesWholeOwnText(^\\s+$)");
+        assertEquals(1, p2.size());
+        assertEquals("2", p2.first().id());
+
+        Elements p3 = doc.select("p:matchesWholeOwnText(^$)");
+        assertEquals(1, p3.size());
+        assertEquals("3", p3.first().id());
     }
 
     @Test public void testRelaxedTags() {
@@ -830,6 +961,7 @@ public class SelectorTest {
     @Test public void matchText() {
         String html = "<p>One<br>Two</p>";
         Document doc = Jsoup.parse(html);
+        doc.outputSettings().prettyPrint(false);
         String origHtml = doc.html();
 
         Elements one = doc.select("p:matchText:first-child");
@@ -995,5 +1127,258 @@ public class SelectorTest {
         assertEquals(2, spans.size());
         assertEquals("One Two", spans.get(0).text());
         assertEquals("Three Four", spans.get(1).text());
+    }
+
+    @Test
+    public void wildcardNamespaceMatchesNoNamespace() {
+        // https://github.com/jhy/jsoup/issues/1565
+        String xml = "<package><meta>One</meta><opf:meta>Two</opf:meta></package>";
+        Document doc = Jsoup.parse(xml, "", Parser.xmlParser());
+
+        Elements metaEls = doc.select("meta");
+        assertEquals(1, metaEls.size());
+        assertEquals("One", metaEls.get(0).text());
+
+        Elements nsEls = doc.select("*|meta");
+        assertEquals(2, nsEls.size());
+        assertEquals("One", nsEls.get(0).text());
+        assertEquals("Two", nsEls.get(1).text());
+    }
+
+    @Test void containsTextQueryIsNormalized() {
+        Document doc = Jsoup.parse("<p><p id=1>Hello  there now<em>!</em>");
+        Elements a = doc.select("p:contains(Hello   there  now!)");
+        Elements b = doc.select(":containsOwn(hello   there  now)");
+        Elements c = doc.select("p:contains(Hello there now)");
+        Elements d = doc.select(":containsOwn(hello There now)");
+        Elements e = doc.select("p:contains(HelloThereNow)");
+
+        assertEquals(1, a.size());
+        assertEquals(a, b);
+        assertEquals(a, c);
+        assertEquals(a, d);
+        assertEquals(0, e.size());
+        assertNotEquals(a, e);
+    }
+
+    @Test public void selectorExceptionNotStringFormatException() {
+        Selector.SelectorParseException ex = new Selector.SelectorParseException("%&");
+        assertEquals("%&", ex.getMessage());
+    }
+
+    @Test public void evaluatorMemosAreReset() {
+        Evaluator eval = QueryParser.parse("p ~ p");
+        CombiningEvaluator.And andEval = (CombiningEvaluator.And) eval;
+        StructuralEvaluator.PreviousSibling prevEval = (StructuralEvaluator.PreviousSibling) andEval.evaluators.get(0);
+        IdentityHashMap<Element, IdentityHashMap<Element, Boolean>> map = prevEval.threadMemo.get();
+        assertEquals(0, map.size()); // no memo yet
+
+        Document doc1 = Jsoup.parse("<p>One<p>Two<p>Three");
+        Document doc2 = Jsoup.parse("<p>One2<p>Two2<p>Three2");
+
+        Elements s1 = doc1.select(eval);
+        assertEquals(2, s1.size());
+        assertEquals("Two", s1.first().text());
+        Elements s2 = doc2.select(eval);
+        assertEquals(2, s2.size());
+        assertEquals("Two2", s2.first().text());
+
+        assertEquals(1, map.size()); // root of doc 2
+    }
+
+    @Test public void blankTextNodesAreConsideredEmpty() {
+        // https://github.com/jhy/jsoup/issues/1976
+        String html = "<li id=1>\n </li><li id=2></li><li id=3> </li><li id=4>One</li><li id=5><span></li>";
+        Document doc = Jsoup.parse(html);
+        Elements empty = doc.select("li:empty");
+        Elements notEmpty = doc.select("li:not(:empty)");
+
+        assertSelectedIds(empty, "1", "2", "3");
+        assertSelectedIds(notEmpty, "4", "5");
+    }
+
+    @Test
+    public void emptyPseudo() {
+        // https://github.com/jhy/jsoup/issues/2130
+        String html = "<ul>" +
+            "  <li id='1'>\n </li>" + // Blank text node only
+            "  <li id='2'></li>" + // No nodes
+            "  <li id='3'><!-- foo --></li>" + // Comment node only
+            "  <li id='4'>One</li>" + // Text node with content
+            "  <li id='5'><span></span></li>" + // Element node
+            "  <li id='6'>\n <span></span></li>" + // Blank text node followed by an element
+            "  <li id='7'><!-- foo --><i></i></li>" + // Comment node with element
+            "</ul>";
+        Document doc = Jsoup.parse(html);
+        Elements empty = doc.select("li:empty");
+        assertSelectedIds(empty, "1", "2", "3");
+
+        Elements notEmpty = doc.select("li:not(:empty)");
+        assertSelectedIds(notEmpty, "4", "5", "6", "7");
+    }
+
+    @Test public void parentFromSpecifiedDescender() {
+        // https://github.com/jhy/jsoup/issues/2018
+        String html = "<ul id=outer><li>Foo</li><li>Bar <ul id=inner><li>Baz</li><li>Qux</li></ul> </li></ul>";
+        Document doc = Jsoup.parse(html);
+
+        Element ul = doc.expectFirst("#outer");
+        assertEquals(2, ul.childrenSize());
+
+        Element li1 = ul.expectFirst("> li:nth-child(1)");
+        assertEquals("Foo", li1.ownText());
+        assertTrue(li1.select("ul").isEmpty());
+
+        Element li2 = ul.expectFirst("> li:nth-child(2)");
+        assertEquals("Bar", li2.ownText());
+
+        // And now for the bug - li2 select was not restricted to the li2 context
+        Elements innerLis = li2.select("ul > li");
+        assertSelectedOwnText(innerLis, "Baz", "Qux");
+
+        // Confirm that parent selector (" ") works same as immediate parent (">");
+        Elements innerLisFromParent = li2.select("ul li");
+        assertEquals(innerLis, innerLisFromParent);
+    }
+
+    @Test public void rootImmediateParentSubquery() {
+        // a combinator at the start of the query is applied to the Root selector. i.e. "> p" matches a P immediately parented
+        // by the Root (which is <html> for a top level query, or the context element in :has)
+        // in the sub query, the combinator was dropped incorrectly
+        String html = "<p id=0><span>A</p> <p id=1><b><i><span>B</p> <p id=2><i>C</p>\n";
+        Document doc = Jsoup.parse(html);
+
+        Elements els = doc.select("p:has(> span, > i)"); // should match a p with an immediate span or i
+        assertSelectedIds(els, "0", "2");
+    }
+
+    @Test public void is() {
+        String html = "<h1 id=1><p></p></h1> <section><h1 id=2></h1></section> <article><h2 id=3></h2></article> <h2 id=4><p></p></h2>";
+        Document doc = Jsoup.parse(html);
+
+        assertSelectedIds(
+            doc.select(":is(section, article) :is(h1, h2, h3)"),
+            "2", "3");
+
+        assertSelectedIds(
+            doc.select(":is(section, article) ~ :is(h1, h2, h3):has(p)"),
+            "4");
+
+        assertSelectedIds(
+            doc.select(":is(h1:has(p), h2:has(section), h3)"),
+            "1");
+
+        assertSelectedIds(
+            doc.select(":is(h1, h2, h3):has(p)"),
+            "1", "4");
+
+        String query = "div :is(h1, h2)";
+        Evaluator parse = QueryParser.parse(query);
+        assertEquals(query, parse.toString());
+    }
+
+    @Test public void orAfterClass() {
+        // see also QueryParserTest#parsesOrAfterAttribute
+        // https://github.com/jhy/jsoup/issues/2073
+        Document doc = Jsoup.parse("<div id=parent><span class=child></span><span class=child></span><span class=child></span></div>");
+        String q = "#parent [class*=child], .some-other-selector .nested";
+        assertEquals("(Or (And (AttributeWithValueContaining '[class*=child]')(Ancestor (Id '#parent')))(And (Class '.nested')(Ancestor (Class '.some-other-selector'))))", EvaluatorDebug.sexpr(q));
+        Elements els = doc.select(q);
+        assertEquals(3, els.size());
+    }
+
+    @Test public void emptyAttributePrefix() {
+        // https://github.com/jhy/jsoup/issues/2079
+        // Discovered feature: [^] should find elements with any attribute (any prefix)
+        String html = "<p one>One<p one two>Two<p>Three";
+        Document doc = Jsoup.parse(html);
+
+        Elements els = doc.select("[^]");
+        assertSelectedOwnText(els, "One", "Two");
+
+        Elements emptyAttr = doc.select("p:not([^])");
+        assertSelectedOwnText(emptyAttr, "Three");
+    }
+
+    @Test public void anyAttribute() {
+        // https://github.com/jhy/jsoup/issues/2079
+        String html = "<div id=1><p one>One<p one two>Two<p>Three";
+        Document doc = Jsoup.parse(html);
+
+        Elements els = doc.select("p[*]");
+        assertSelectedOwnText(els, "One", "Two");
+
+        Elements emptyAttr = doc.select("p:not([*])");
+        assertSelectedOwnText(emptyAttr, "Three");
+    }
+
+    @Test void divHasSpanPreceding() {
+        // https://github.com/jhy/jsoup/issues/2187
+        String html = "<div><span>abc</span><a>def</a></div>";
+        String q = "div:has(span + a)";
+
+        Document doc = Jsoup.parse(html);
+        Elements els = doc.select(q);
+        assertEquals(1, els.size());
+        assertEquals("div", els.first().normalName());
+    }
+
+    @Test void divHasDivPreceding() {
+        // https://github.com/jhy/jsoup/issues/2131
+        String html = "<div id=1>\n" +
+            "<div 1><span>hello</span></div>\n" +
+            "<div 2><span>there</span></div>\n" +
+            "\n" +
+            "</div>";
+
+        String q = "div:has(>div + div)";
+
+        Document doc = Jsoup.parse(html);
+        Elements els = doc.select(q);
+        assertEquals(1, els.size());
+        assertEquals("div", els.first().normalName());
+        assertEquals("1", els.first().id());
+    }
+
+    @Test void nestedMultiHas() {
+        // https://github.com/jhy/jsoup/issues/2131
+        String html =
+            "<html>" +
+                "<head></head>" +
+                "<body>" +
+                "<div id=o>" +
+                "<div id=i1><span id=s1>hello</span></div>" +
+                "<div id=i2><span id=s2>world</span></div>" +
+                "</div>" +
+                "</body></html>";
+        Document document = Jsoup.parse(html);
+
+        String q = "div:has(> div:has(> span) + div:has(> span))";
+        Elements els = document.select(q);
+        assertEquals(1, els.size());
+        assertEquals("o", els.get(0).id());
+    }
+
+    @Test void negativeNthChild() {
+        // https://github.com/jhy/jsoup/issues/1147
+        String html = "<p>1</p> <p>2</p> <p>3</p> <p>4</p>";
+        Document doc = Jsoup.parse(html);
+
+        // Digitless
+        Elements pos = doc.select("p:nth-child(n+2)");
+        assertSelectedOwnText(pos, "2", "3", "4");
+
+        Elements neg = doc.select("p:nth-child(-n+2)");
+        assertSelectedOwnText(neg, "1", "2");
+
+        Elements combo = doc.select("p:nth-child(n+2):nth-child(-n+2)");
+        assertSelectedOwnText(combo, "2");
+
+        // Digitful, 2n+2 or -1n+2
+        Elements pos2 = doc.select("p:nth-child(2n+2)");
+        assertSelectedOwnText(pos2, "2", "4");
+
+        Elements neg2 = doc.select("p:nth-child(-1n+2)");
+        assertSelectedOwnText(neg2, "1", "2");
     }
 }

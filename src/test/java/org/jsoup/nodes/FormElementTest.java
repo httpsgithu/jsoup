@@ -7,7 +7,7 @@ import org.jsoup.integration.servlets.CookieServlet;
 import org.jsoup.integration.servlets.EchoServlet;
 import org.jsoup.integration.servlets.FileServlet;
 import org.jsoup.select.Elements;
-import org.junit.jupiter.api.AfterAll;
+import org.jsoup.select.SelectorTest;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -27,11 +27,6 @@ public class FormElementTest {
         TestServer.start();
     }
 
-    @AfterAll
-    public static void tearDown() {
-        TestServer.stop();
-    }
-
     @Test public void hasAssociatedControls() {
         //"button", "fieldset", "input", "keygen", "object", "output", "select", "textarea"
         String html = "<form id=1><button id=1><fieldset id=2 /><input id=3><keygen id=4><object id=5><output id=6>" +
@@ -49,6 +44,7 @@ public class FormElementTest {
                 "<input name='eight' type='checkbox' checked><input name='nine' type='checkbox' value='unset'>" +
                 "<input name='ten' value='text' disabled>" +
                 "<input name='eleven' value='text' type='button'>" +
+                "<input name='twelve' value='text' type='image'>" +
                 "</form>";
         Document doc = Jsoup.parse(html);
         FormElement form = (FormElement) doc.select("form").first();
@@ -215,5 +211,18 @@ public class FormElementTest {
         assertTrue(cookieDoc.connection().response().url().toExternalForm().contains("CookieServlet"));
         assertTrue(formDoc.connection().response().url().toExternalForm().contains("upload-form"));
         assertTrue(echo.connection().response().url().toExternalForm().contains("EchoServlet"));
+    }
+
+    @Test void formElementsAreLive() {
+        final String html = "<html><body><form><div id=d1><input id=foo name=foo value=none></div><input id=bar name=bar value=one></form></body></html>";
+        final Document doc = Jsoup.parse(html);
+        doc.select("#d1").remove();
+        final FormElement form = (FormElement) doc.selectFirst("form");
+        form.appendElement("input").attr("id", "baz").attr("name", "baz").attr("value", "two");
+        SelectorTest.assertSelectedIds(form.elements(), "bar", "baz");
+
+        List<Connection.KeyVal> keyVals = form.formData();
+        assertEquals("one", keyVals.get(0).value());
+        assertEquals("two", keyVals.get(1).value());
     }
 }

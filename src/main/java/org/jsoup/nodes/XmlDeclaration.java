@@ -2,7 +2,6 @@ package org.jsoup.nodes;
 
 import org.jsoup.SerializationException;
 import org.jsoup.internal.StringUtil;
-import org.jsoup.helper.Validate;
 
 import java.io.IOException;
 
@@ -19,12 +18,11 @@ public class XmlDeclaration extends LeafNode {
      * @param isProcessingInstruction is processing instruction
      */
     public XmlDeclaration(String name, boolean isProcessingInstruction) {
-        Validate.notNull(name);
-        value = name;
+        super(name);
         this.isProcessingInstruction = isProcessingInstruction;
     }
 
-    public String nodeName() {
+    @Override public String nodeName() {
         return "#declaration";
     }
 
@@ -52,13 +50,22 @@ public class XmlDeclaration extends LeafNode {
 
     private void getWholeDeclaration(Appendable accum, Document.OutputSettings out) throws IOException {
         for (Attribute attribute : attributes()) {
-            if (!attribute.getKey().equals(nodeName())) { // skips coreValue (name)
+            String key = attribute.getKey();
+            String val = attribute.getValue();
+            if (!key.equals(nodeName())) { // skips coreValue (name)
                 accum.append(' ');
-                attribute.html(accum, out);
+                // basically like Attribute, but skip empty vals in XML
+                accum.append(key);
+                if (!val.isEmpty()) {
+                    accum.append("=\"");
+                    Entities.escape(accum, val, out, Entities.ForAttribute);
+                    accum.append('"');
+                }
             }
         }
     }
 
+    @Override
     void outerHtmlHead(Appendable accum, int depth, Document.OutputSettings out) throws IOException {
         accum
             .append("<")
@@ -70,6 +77,7 @@ public class XmlDeclaration extends LeafNode {
             .append(">");
     }
 
+    @Override
     void outerHtmlTail(Appendable accum, int depth, Document.OutputSettings out) {
     }
 

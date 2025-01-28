@@ -94,7 +94,7 @@ public class XmlTreeBuilderTest {
     public void testDoesNotForceSelfClosingKnownTags() {
         // html will force "<br>one</br>" to logically "<br />One<br />". XML should be stay "<br>one</br> -- don't recognise tag.
         Document htmlDoc = Jsoup.parse("<br>one</br>");
-        assertEquals("<br>one\n<br>", htmlDoc.body().html());
+        assertEquals("<br>\none\n<br>", htmlDoc.body().html());
 
         Document xmlDoc = Jsoup.parse("<br>one</br>", "", Parser.xmlParser());
         assertEquals("<br>one</br>", xmlDoc.html());
@@ -127,7 +127,7 @@ public class XmlTreeBuilderTest {
     public void testDoesHandleEOFInTag() {
         String html = "<img src=asdf onerror=\"alert(1)\" x=";
         Document xmlDoc = Jsoup.parse(html, "", Parser.xmlParser());
-        assertEquals("<img src=\"asdf\" onerror=\"alert(1)\" x=\"\" />", xmlDoc.html());
+        assertEquals("<img src=\"asdf\" onerror=\"alert(1)\" x=\"\"></img>", xmlDoc.html());
     }
 
     @Test
@@ -150,6 +150,16 @@ public class XmlTreeBuilderTest {
         assertEquals("else", decl.attr("something"));
         assertEquals("version=\"1\" encoding=\"UTF-8\" something=\"else\"", decl.getWholeDeclaration());
         assertEquals("<?xml version=\"1\" encoding=\"UTF-8\" something=\"else\"?>", decl.outerHtml());
+    }
+
+    @Test
+    public void testParseDeclarationWithoutAttributes() {
+        String xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<?myProcessingInstruction My Processing instruction.?>";
+        Document doc = Jsoup.parse(xml, "", Parser.xmlParser());
+        XmlDeclaration decl = (XmlDeclaration) doc.childNode(2);
+        assertEquals("myProcessingInstruction", decl.name());
+        assertTrue(decl.hasAttr("My"));
+        assertEquals("<?myProcessingInstruction My Processing instruction.?>", decl.outerHtml());
     }
 
     @Test
@@ -278,6 +288,69 @@ public class XmlTreeBuilderTest {
         doc.outputSettings().charset("ascii"); // to make sure &copy; is output
         assertEquals(doc.outputSettings().syntax(), Syntax.xml);
         assertEquals("<p one=\"&lt;two>&copy;\">Three</p>", doc.html());
+    }
+
+    @Test void xmlOutputCorrectsInvalidAttributeNames() {
+        String xml = "<body style=\"color: red\" \" name\"><div =\"\"></div></body>";
+        Document doc = Jsoup.parse(xml, Parser.xmlParser());
+        assertEquals(Syntax.xml, doc.outputSettings().syntax());
+
+        String out = doc.html();
+        assertEquals("<body style=\"color: red\" _=\"\" name_=\"\"><div _=\"\"></div></body>", out);
+    }
+
+    @Test void xmlValidAttributes() {
+        String xml = "<a bB1-_:.=foo _9!=bar xmlns:p1=qux>One</a>";
+        Document doc = Jsoup.parse(xml, Parser.xmlParser());
+        assertEquals(Syntax.xml, doc.outputSettings().syntax());
+
+        String out = doc.html();
+        assertEquals("<a bB1-_:.=\"foo\" _9_=\"bar\" xmlns:p1=\"qux\">One</a>", out); // first is same, second coerced
+    }
+
+    @Test void customTagsAreFlyweights() {
+        String xml = "<foo>Foo</foo><foo>Foo</foo><FOO>FOO</FOO><FOO>FOO</FOO>";
+        Document doc = Jsoup.parse(xml, Parser.xmlParser());
+        Elements els = doc.children();
+
+        Tag t1 = els.get(0).tag();
+        Tag t2 = els.get(1).tag();
+        Tag t3 = els.get(2).tag();
+        Tag t4 = els.get(3).tag();
+        assertEquals("foo", t1.getName());
+        assertEquals("FOO", t3.getName());
+        assertSame(t1, t2);
+        assertSame(t3, t4);
+    }
+
+    @Test void rootHasXmlSettings() {
+        Document doc = Jsoup.parse("<foo>", Parser.xmlParser());
+        ParseSettings settings = doc.parser().settings();
+        assertTrue(settings.preserveTagCase());
+        assertTrue(settings.preserveAttributeCase());
+        assertEquals(Parser.NamespaceXml, doc.parser().defaultNamespace());
+    }
+
+    @Test void xmlNamespace() {
+        String xml = "<foo><bar><div><svg><math>Qux</bar></foo>";
+        Document doc = Jsoup.parse(xml, Parser.xmlParser());
+
+        assertXmlNamespace(doc);
+        Elements els = doc.select("*");
+        for (Element el : els) {
+            assertXmlNamespace(el);
+        }
+
+        Document clone = doc.clone();
+        assertXmlNamespace(clone);
+        assertXmlNamespace(clone.expectFirst("bar"));
+
+        Document shallow = doc.shallowClone();
+        assertXmlNamespace(shallow);
+    }
+
+    private static void assertXmlNamespace(Element el) {
+        assertEquals(Parser.NamespaceXml, el.tag().namespace(), String.format("Element %s not in XML namespace", el.tagName()));
     }
 
 }

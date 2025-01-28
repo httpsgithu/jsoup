@@ -3,19 +3,27 @@ package org.jsoup.parser;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
+import org.jspecify.annotations.Nullable;
 
 import java.io.Reader;
 import java.io.StringReader;
 import java.util.List;
 
 /**
- * Parses HTML into a {@link org.jsoup.nodes.Document}. Generally best to use one of the  more convenient parse methods
- * in {@link org.jsoup.Jsoup}.
- */
+ Parses HTML or XML into a {@link org.jsoup.nodes.Document}. Generally, it is simpler to use one of the parse methods in
+ {@link org.jsoup.Jsoup}.
+ <p>Note that a Parser instance object is not threadsafe. To reuse a Parser configuration in a multi-threaded
+ environment, use {@link #newInstance()} to make copies. */
 public class Parser {
+    public static final String NamespaceHtml = "http://www.w3.org/1999/xhtml";
+    public static final String NamespaceXml = "http://www.w3.org/XML/1998/namespace";
+    public static final String NamespaceMathml = "http://www.w3.org/1998/Math/MathML";
+    public static final String NamespaceSvg = "http://www.w3.org/2000/svg";
+
     private TreeBuilder treeBuilder;
     private ParseErrorList errors;
     private ParseSettings settings;
+    private boolean trackPosition = false;
 
     /**
      * Create a new Parser, using the specified TreeBuilder
@@ -39,19 +47,25 @@ public class Parser {
         treeBuilder = copy.treeBuilder.newInstance(); // because extended
         errors = new ParseErrorList(copy.errors); // only copies size, not contents
         settings = new ParseSettings(copy.settings);
+        trackPosition = copy.trackPosition;
     }
     
     public Document parseInput(String html, String baseUri) {
-        return treeBuilder.parse(new StringReader(html), baseUri, this);
+        return parseInput(new StringReader(html), baseUri);
     }
 
     public Document parseInput(Reader inputHtml, String baseUri) {
         return treeBuilder.parse(inputHtml, baseUri, this);
     }
 
-    public List<Node> parseFragmentInput(String fragment, Element context, String baseUri) {
+    public List<Node> parseFragmentInput(String fragment, @Nullable Element context, String baseUri) {
+        return parseFragmentInput(new StringReader(fragment), context, baseUri);
+    }
+
+    public List<Node> parseFragmentInput(Reader fragment, @Nullable Element context, String baseUri) {
         return treeBuilder.parseFragment(fragment, context, baseUri, this);
     }
+
     // gets & sets
     /**
      * Get the TreeBuilder currently in use.
@@ -63,7 +77,7 @@ public class Parser {
 
     /**
      * Update the TreeBuilder used when parsing content.
-     * @param treeBuilder current TreeBuilder
+     * @param treeBuilder new TreeBuilder
      * @return this, for chaining
      */
     public Parser setTreeBuilder(TreeBuilder treeBuilder) {
@@ -93,16 +107,46 @@ public class Parser {
     /**
      * Retrieve the parse errors, if any, from the last parse.
      * @return list of parse errors, up to the size of the maximum errors tracked.
+     * @see #setTrackErrors(int)
      */
     public ParseErrorList getErrors() {
         return errors;
     }
 
+    /**
+     Test if position tracking is enabled. If it is, Nodes will have a Position to track where in the original input
+     source they were created from. By default, tracking is not enabled.
+     * @return current track position setting
+     */
+    public boolean isTrackPosition() {
+        return trackPosition;
+    }
+
+    /**
+     Enable or disable source position tracking. If enabled, Nodes will have a Position to track where in the original
+     input source they were created from.
+     @param trackPosition position tracking setting; {@code true} to enable
+     @return this Parser, for chaining
+     */
+    public Parser setTrackPosition(boolean trackPosition) {
+        this.trackPosition = trackPosition;
+        return this;
+    }
+
+    /**
+     Update the ParseSettings of this Parser, to control the case sensitivity of tags and attributes.
+     * @param settings the new settings
+     * @return this Parser
+     */
     public Parser settings(ParseSettings settings) {
         this.settings = settings;
         return this;
     }
 
+    /**
+     Gets the current ParseSettings for this Parser
+     * @return current ParseSettings
+     */
     public ParseSettings settings() {
         return settings;
     }
@@ -113,6 +157,10 @@ public class Parser {
      */
     public boolean isContentForTagData(String normalName) {
         return getTreeBuilder().isContentForTagData(normalName);
+    }
+
+    public String defaultNamespace() {
+        return getTreeBuilder().defaultNamespace();
     }
 
     // static parse functions below
@@ -141,7 +189,7 @@ public class Parser {
      */
     public static List<Node> parseFragment(String fragmentHtml, Element context, String baseUri) {
         HtmlTreeBuilder treeBuilder = new HtmlTreeBuilder();
-        return treeBuilder.parseFragment(fragmentHtml, context, baseUri, new Parser(treeBuilder));
+        return treeBuilder.parseFragment(new StringReader(fragmentHtml), context, baseUri, new Parser(treeBuilder));
     }
 
     /**
@@ -159,7 +207,7 @@ public class Parser {
         HtmlTreeBuilder treeBuilder = new HtmlTreeBuilder();
         Parser parser = new Parser(treeBuilder);
         parser.errors = errorList;
-        return treeBuilder.parseFragment(fragmentHtml, context, baseUri, parser);
+        return treeBuilder.parseFragment(new StringReader(fragmentHtml), context, baseUri, parser);
     }
 
     /**
@@ -171,7 +219,7 @@ public class Parser {
      */
     public static List<Node> parseXmlFragment(String fragmentXml, String baseUri) {
         XmlTreeBuilder treeBuilder = new XmlTreeBuilder();
-        return treeBuilder.parseFragment(fragmentXml, baseUri, new Parser(treeBuilder));
+        return treeBuilder.parseFragment(new StringReader(fragmentXml), null, baseUri, new Parser(treeBuilder));
     }
 
     /**
@@ -203,7 +251,9 @@ public class Parser {
      * @return an unescaped string
      */
     public static String unescapeEntities(String string, boolean inAttribute) {
-        Tokeniser tokeniser = new Tokeniser(new CharacterReader(string), ParseErrorList.noTracking());
+        Parser parser = Parser.htmlParser();
+        parser.treeBuilder.initialiseParse(new StringReader(string), "", parser);
+        Tokeniser tokeniser = new Tokeniser(parser.treeBuilder);
         return tokeniser.unescapeEntities(inAttribute);
     }
 

@@ -8,20 +8,23 @@ import org.jsoup.nodes.Element;
 import org.jsoup.nodes.FormElement;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 /**
  A list of {@link Element}s, with methods that act on every element in the list.
- <p>
- To get an {@code Elements} object, use the {@link Element#select(String)} method.
- </p>
+ <p>To get an {@code Elements} object, use the {@link Element#select(String)} method.</p>
+ <p>Methods that {@link #set(int, Element) set}, {@link #remove(int) remove}, or {@link #replaceAll(UnaryOperator)
+ replace} Elements in the list will also act on the underlying {@link org.jsoup.nodes.Document DOM}.</p>
 
  @author Jonathan Hedley, jonathan@hedley.net */
 public class Elements extends ArrayList<Element> {
@@ -62,7 +65,7 @@ public class Elements extends ArrayList<Element> {
     /**
      Get an attribute value from the first matched element that has the attribute.
      @param attributeKey The attribute key.
-     @return The attribute value from the first matched element that has the attribute.. If no elements were matched (isEmpty() == true),
+     @return The attribute value from the first matched element that has the attribute. If no elements were matched (isEmpty() == true),
      or if the no elements have the attribute, returns empty string.
      @see #hasAttr(String)
      */
@@ -211,13 +214,9 @@ public class Elements extends ArrayList<Element> {
      * @see #eachText()
      */
     public String text() {
-        StringBuilder sb = StringUtil.borrowBuilder();
-        for (Element element : this) {
-            if (sb.length() != 0)
-                sb.append(" ");
-            sb.append(element.text());
-        }
-        return StringUtil.releaseBuilder(sb);
+        return stream()
+            .map(Element::text)
+            .collect(StringUtil.joining(" "));
     }
 
     /**
@@ -257,13 +256,9 @@ public class Elements extends ArrayList<Element> {
      * @see #outerHtml()
      */
     public String html() {
-        StringBuilder sb = StringUtil.borrowBuilder();
-        for (Element element : this) {
-            if (sb.length() != 0)
-                sb.append("\n");
-            sb.append(element.html());
-        }
-        return StringUtil.releaseBuilder(sb);
+        return stream()
+            .map(Element::html)
+            .collect(StringUtil.joining("\n"));
     }
     
     /**
@@ -273,13 +268,9 @@ public class Elements extends ArrayList<Element> {
      * @see #html()
      */
     public String outerHtml() {
-        StringBuilder sb = StringUtil.borrowBuilder();
-        for (Element element : this) {
-            if (sb.length() != 0)
-                sb.append("\n");
-            sb.append(element.outerHtml());
-        }
-        return StringUtil.releaseBuilder(sb);
+        return stream()
+            .map(Element::outerHtml)
+            .collect(StringUtil.joining("\n"));
     }
 
     /**
@@ -431,6 +422,7 @@ public class Elements extends ArrayList<Element> {
 
     /**
      * Remove each matched element from the DOM. This is similar to setting the outer HTML of each element to nothing.
+     * <p>The elements will still be retained in this list, in case further processing of them is desired.</p>
      * <p>
      * E.g. HTML: {@code <div><p>Hello</p> <p>there</p> <img /></div>}<br>
      * <code>doc.select("p").remove();</code><br>
@@ -440,6 +432,7 @@ public class Elements extends ArrayList<Element> {
      * @return this, for chaining
      * @see Element#empty()
      * @see #empty()
+     * @see #clear()
      */
     public Elements remove() {
         for (Element element : this) {
@@ -457,6 +450,35 @@ public class Elements extends ArrayList<Element> {
      */
     public Elements select(String query) {
         return Selector.select(query, this);
+    }
+
+    /**
+     Find the first Element that matches the {@link Selector} CSS query within this element list.
+     <p>This is effectively the same as calling {@code elements.select(query).first()}, but is more efficient as query
+     execution stops on the first hit.</p>
+
+     @param cssQuery a {@link Selector} query
+     @return the first matching element, or <b>{@code null}</b> if there is no match.
+     @see #expectFirst(String)
+     @since 1.19.1
+     */
+    public @Nullable Element selectFirst(String cssQuery) {
+        return Selector.selectFirst(cssQuery, this);
+    }
+
+    /**
+     Just like {@link #selectFirst(String)}, but if there is no match, throws an {@link IllegalArgumentException}.
+
+     @param cssQuery a {@link Selector} query
+     @return the first matching element
+     @throws IllegalArgumentException if no match is found
+     @since 1.19.1
+     */
+    public Element expectFirst(String cssQuery) {
+        return (Element) Validate.ensureNotNull(
+            Selector.selectFirst(cssQuery, this),
+            "No elements matched the query '%s' in the elements.", cssQuery
+        );
     }
 
     /**
@@ -574,10 +596,7 @@ public class Elements extends ArrayList<Element> {
             do {
                 Element sib = next ? e.nextElementSibling() : e.previousElementSibling();
                 if (sib == null) break;
-                if (eval == null)
-                    els.add(sib);
-                else if (sib.is(eval))
-                    els.add(sib);
+                if (eval == null || sib.is(eval)) els.add(sib);
                 e = sib;
             } while (all);
         }
@@ -683,4 +702,121 @@ public class Elements extends ArrayList<Element> {
         return nodes;
     }
 
+    // list methods that update the DOM:
+
+    /**
+     Replace the Element at the specified index in this list, and in the DOM.
+     * @param index index of the element to replace
+     * @param element element to be stored at the specified position
+     * @return the old Element at this index
+     * @since 1.17.1
+     */
+    @Override public Element set(int index, Element element) {
+        Validate.notNull(element);
+        Element old = super.set(index, element);
+        old.replaceWith(element);
+        return old;
+    }
+
+    /**
+     Remove the Element at the specified index in this ist, and from the DOM.
+     * @param index the index of the element to be removed
+     * @return the old element at this index
+     * @since 1.17.1
+     */
+    @Override public Element remove(int index) {
+        Element old = super.remove(index);
+        old.remove();
+        return old;
+    }
+
+    /**
+     Remove the specified Element from this list, and from th DOM
+     * @param o element to be removed from this list, if present
+     * @return if this list contained the Element
+     * @since 1.17.1
+     */
+    @Override public boolean remove(Object o) {
+        int index = super.indexOf(o);
+        if (index == -1) {
+            return false;
+        } else {
+            remove(index);
+            return true;
+        }
+    }
+
+    /**
+     Removes all the elements from this list, and each of them from the DOM.
+     * @since 1.17.1
+     * @see #remove()
+     */
+    @Override public void clear() {
+        remove();
+        super.clear();
+    }
+
+    /**
+     Removes from this list, and from the DOM, each of the elements that are contained in the specified collection and
+     are in this list.
+     * @param c collection containing elements to be removed from this list
+     * @return {@code true} if elements were removed from this list
+     * @since 1.17.1
+     */
+    @Override public boolean removeAll(Collection<?> c) {
+        boolean anyRemoved = false;
+        for (Object o : c) {
+            anyRemoved |= this.remove(o);
+        }
+        return anyRemoved;
+    }
+
+    /**
+     Retain in this list, and in the DOM, only the elements that are in the specified collection and are in this list.
+     In other words, remove elements from this list and the DOM any item that is in this list but not in the specified
+     collection.
+     * @param c collection containing elements to be retained in this list
+     * @return {@code true} if elements were removed from this list
+     * @since 1.17.1
+     */
+    @Override public boolean retainAll(Collection<?> c) {
+        boolean anyRemoved = false;
+        for (Iterator<Element> it = this.iterator(); it.hasNext(); ) {
+            Element el = it.next();
+            if (!c.contains(el)) {
+                it.remove();
+                anyRemoved = true;
+            }
+        }
+        return anyRemoved;
+    }
+
+    /**
+     Remove from the list, and from the DOM, all elements in this list that mach the given filter.
+     * @param filter a predicate which returns {@code true} for elements to be removed
+     * @return {@code true} if elements were removed from this list
+     * @since 1.17.1
+     */
+    @Override public boolean removeIf(Predicate<? super Element> filter) {
+        boolean anyRemoved = false;
+        for (Iterator<Element> it = this.iterator(); it.hasNext(); ) {
+            Element el = it.next();
+            if (filter.test(el)) {
+                it.remove();
+                anyRemoved = true;
+            }
+        }
+        return anyRemoved;
+    }
+
+    /**
+     Replace each element in this list with the result of the operator, and update the DOM.
+     * @param operator the operator to apply to each element
+     * @since 1.17.1
+     */
+    @Override public void replaceAll(UnaryOperator<Element> operator) {
+        for (int i = 0; i < this.size(); i++) {
+            this.set(i, operator.apply(this.get(i)));
+        }
+    }
 }

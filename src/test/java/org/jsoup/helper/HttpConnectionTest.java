@@ -7,9 +7,17 @@ import org.jsoup.integration.ParseTest;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.Authenticator;
 import java.net.MalformedURLException;
+import java.net.PasswordAuthentication;
 import java.net.URL;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -147,27 +155,6 @@ public class HttpConnectionTest {
         assertEquals(0, res.cookies().size());
     }
 
-    @Test public void ignoresEmptyCookieNameAndVals() {
-        // prep http response header map
-        Map<String, List<String>> headers = new HashMap<>();
-        List<String> cookieStrings = new ArrayList<>();
-        cookieStrings.add(null);
-        cookieStrings.add("");
-        cookieStrings.add("one");
-        cookieStrings.add("two=");
-        cookieStrings.add("three=;");
-        cookieStrings.add("four=data; Domain=.example.com; Path=/");
-
-        headers.put("Set-Cookie", cookieStrings);
-        HttpConnection.Response res = new HttpConnection.Response();
-        res.processResponseHeaders(headers);
-        assertEquals(4, res.cookies().size());
-        assertEquals("", res.cookie("one"));
-        assertEquals("", res.cookie("two"));
-        assertEquals("", res.cookie("three"));
-        assertEquals("data", res.cookie("four"));
-    }
-
     @Test public void connectWithUrl() throws MalformedURLException {
         Connection con = HttpConnection.connect(new URL("http://example.com"));
         assertEquals("http://example.com", con.request().url().toExternalForm());
@@ -249,9 +236,51 @@ public class HttpConnectionTest {
     }
 
     @Test public void encodeUrl() throws MalformedURLException {
-        URL url1 = new URL("http://test.com/?q=white space");
-        URL url2 = HttpConnection.encodeUrl(url1);
-        assertEquals("http://test.com/?q=white%20space", url2.toExternalForm());
+        URL url1 = new URL("https://test.com/foo%20bar/%5BOne%5D?q=white+space#frag");
+        URL url2 = new UrlBuilder(url1).build();
+        assertEquals("https://test.com/foo%20bar/%5BOne%5D?q=white+space#frag", url2.toExternalForm());
+    }
+
+    @Test public void encodeUrlSupplementary() throws MalformedURLException {
+        URL url1 = new URL("https://example.com/tools/test💩.html"); // = "/tools/test\uD83D\uDCA9.html"
+        URL url2 = new UrlBuilder(url1).build();
+        assertEquals("https://example.com/tools/test%F0%9F%92%A9.html", url2.toExternalForm());
+    }
+
+    @Test void encodedUrlDoesntDoubleEncode() throws MalformedURLException {
+        URL url1 = new URL("https://test.com/foo%20bar/%5BOne%5D?q=white+space#frag%20ment");
+        URL url2 = new UrlBuilder(url1).build();
+        URL url3 = new UrlBuilder(url2).build();
+        assertEquals("https://test.com/foo%20bar/%5BOne%5D?q=white+space#frag%20ment", url2.toExternalForm());
+        assertEquals("https://test.com/foo%20bar/%5BOne%5D?q=white+space#frag%20ment", url3.toExternalForm());
+    }
+
+    @Test void urlPathIsPreservedDoesntDoubleEncode() throws MalformedURLException {
+        URL url1 = new URL("https://test.com/[foo] bar+/%5BOne%5D?q=white space#frag ment");
+        URL url2 = new UrlBuilder(url1).build();
+        URL url3 = new UrlBuilder(url2).build();
+        assertEquals("https://test.com/%5Bfoo%5D%20bar+/%5BOne%5D?q=white+space#frag%20ment", url2.toExternalForm());
+        assertEquals("https://test.com/%5Bfoo%5D%20bar+/%5BOne%5D?q=white+space#frag%20ment", url3.toExternalForm());
+    }
+
+    @Test void connectToEncodedUrl() {
+        Connection connect = Jsoup.connect("https://example.com/a%20b%20c?query+string");
+        URL url = connect.request().url();
+        assertEquals("https://example.com/a%20b%20c?query+string", url.toExternalForm());
+    }
+
+    @Test void encodedUrlPathIsPreserved() {
+        // https://github.com/jhy/jsoup/issues/1952
+        Connection connect = Jsoup.connect("https://example.com/%2B32");
+        URL url = connect.request().url();
+        assertEquals("https://example.com/%2B32", url.toExternalForm());
+    }
+
+    @Test void urlPathPlusIsPreserved() {
+        // https://github.com/jhy/jsoup/issues/1952
+        Connection connect = Jsoup.connect("https://example.com/123+456");
+        URL url = connect.request().url();
+        assertEquals("https://example.com/123+456", url.toExternalForm());
     }
 
     @Test public void noUrlThrowsValidationError() throws IOException {
@@ -283,6 +312,18 @@ public class HttpConnectionTest {
         assertEquals(puny, req.url().toExternalForm());
     }
 
+    @Test void supportsIdnWithPort() throws MalformedURLException {
+        String idn = "https://www.测试.测试:9001/foo.html?bar";
+        String puny = "https://www.xn--0zwm56d.xn--0zwm56d:9001/foo.html?bar";
+
+        Connection con = Jsoup.connect(idn);
+        assertEquals(puny, con.request().url().toExternalForm());
+
+        HttpConnection.Request req = new HttpConnection.Request();
+        req.url(new URL(idn));
+        assertEquals(puny, req.url().toExternalForm());
+    }
+
     @Test public void validationErrorsOnExecute() throws IOException {
         Connection con = new HttpConnection();
         boolean urlThrew = false;
@@ -292,5 +333,58 @@ public class HttpConnectionTest {
             urlThrew = e.getMessage().contains("URL");
         }
         assertTrue(urlThrew);
+    }
+
+    @Test void testMalformedException() {
+        boolean threw = false;
+        try {
+            Jsoup.connect("jsoup.org/test");
+        } catch (IllegalArgumentException e) {
+            threw = true;
+            assertEquals("The supplied URL, 'jsoup.org/test', is malformed. Make sure it is an absolute URL, and starts with 'http://' or 'https://'. See https://jsoup.org/cookbook/extracting-data/working-with-urls", e.getMessage());
+        }
+        assertTrue(threw);
+    }
+
+    @Test void setHeaderWithUnicodeValue() {
+        Connection connect = Jsoup.connect("https://example.com");
+        String value = "/foo/我的";
+        connect.header("Key", value);
+
+        String actual = connect.request().header("Key");
+        assertEquals(value, actual);
+    }
+
+    @Test void setAuth() throws MalformedURLException {
+        Connection con = Jsoup.newSession();
+
+        assertNull(con.request().auth());
+
+        RequestAuthenticator auth1 = new RequestAuthenticator() {
+            @Override public PasswordAuthentication authenticate(Context auth) {
+                return auth.credentials("foo", "bar");
+            }
+        };
+
+        RequestAuthenticator auth2 = new RequestAuthenticator() {
+            @Override public PasswordAuthentication authenticate(Context auth) {
+                return auth.credentials("qux", "baz");
+            }
+        };
+
+        con.auth(auth1);
+        assertSame(con.request().auth(), auth1);
+
+        con.auth(auth2);
+        assertSame(con.request().auth(), auth2);
+
+        con.request().auth(auth1);
+        assertSame(con.request().auth(), auth1);
+
+        PasswordAuthentication creds = auth1.authenticate(
+            new RequestAuthenticator.Context(new URL("http://example.com"), Authenticator.RequestorType.SERVER, "Realm"));
+        assertNotNull(creds);
+        assertEquals("foo", creds.getUserName());
+        assertEquals("bar", new String(creds.getPassword()));
     }
 }

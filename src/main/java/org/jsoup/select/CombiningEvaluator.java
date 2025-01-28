@@ -2,28 +2,44 @@ package org.jsoup.select;
 
 import org.jsoup.internal.StringUtil;
 import org.jsoup.nodes.Element;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 
 /**
  * Base combining (and, or) evaluator.
  */
-abstract class CombiningEvaluator extends Evaluator {
-    final ArrayList<Evaluator> evaluators;
+public abstract class CombiningEvaluator extends Evaluator {
+    final ArrayList<Evaluator> evaluators; // maintain original order so that #toString() is sensible
+    final List<Evaluator> sortedEvaluators; // cost ascending order
     int num = 0;
+    int cost = 0;
 
     CombiningEvaluator() {
         super();
         evaluators = new ArrayList<>();
+        sortedEvaluators = new ArrayList<>();
     }
 
     CombiningEvaluator(Collection<Evaluator> evaluators) {
         this();
         this.evaluators.addAll(evaluators);
-        updateNumEvaluators();
+        updateEvaluators();
+    }
+
+    @Override protected void reset() {
+        for (Evaluator evaluator : evaluators) {
+            evaluator.reset();
+        }
+        super.reset();
+    }
+
+    @Override protected int cost() {
+        return cost;
     }
 
     @Nullable Evaluator rightMostEvaluator() {
@@ -32,15 +48,25 @@ abstract class CombiningEvaluator extends Evaluator {
     
     void replaceRightMostEvaluator(Evaluator replacement) {
         evaluators.set(num - 1, replacement);
+        updateEvaluators();
     }
 
-    void updateNumEvaluators() {
+    void updateEvaluators() {
         // used so we don't need to bash on size() for every match test
         num = evaluators.size();
+
+        // sort the evaluators by lowest cost first, to optimize the evaluation order
+        cost = 0;
+        for (Evaluator evaluator : evaluators) {
+            cost += evaluator.cost();
+        }
+        sortedEvaluators.clear();
+        sortedEvaluators.addAll(evaluators);
+        sortedEvaluators.sort(Comparator.comparingInt(Evaluator::cost));
     }
 
-    static final class And extends CombiningEvaluator {
-        And(Collection<Evaluator> evaluators) {
+    public static final class And extends CombiningEvaluator {
+        public And(Collection<Evaluator> evaluators) {
             super(evaluators);
         }
 
@@ -49,10 +75,10 @@ abstract class CombiningEvaluator extends Evaluator {
         }
 
         @Override
-        public boolean matches(Element root, Element node) {
-            for (int i = num - 1; i >= 0; i--) { // process backwards so that :matchText is evaled earlier, to catch parent query. todo - should redo matchText to virtually expand during match, not pre-match (see SelectorTest#findBetweenSpan)
-                Evaluator s = evaluators.get(i);
-                if (!s.matches(root, node))
+        public boolean matches(Element root, Element element) {
+            for (int i = 0; i < num; i++) {
+                Evaluator s = sortedEvaluators.get(i);
+                if (!s.matches(root, element))
                     return false;
             }
             return true;
@@ -64,18 +90,18 @@ abstract class CombiningEvaluator extends Evaluator {
         }
     }
 
-    static final class Or extends CombiningEvaluator {
+    public static final class Or extends CombiningEvaluator {
         /**
          * Create a new Or evaluator. The initial evaluators are ANDed together and used as the first clause of the OR.
          * @param evaluators initial OR clause (these are wrapped into an AND evaluator).
          */
-        Or(Collection<Evaluator> evaluators) {
+        public Or(Collection<Evaluator> evaluators) {
             super();
             if (num > 1)
                 this.evaluators.add(new And(evaluators));
             else // 0 or 1
                 this.evaluators.addAll(evaluators);
-            updateNumEvaluators();
+            updateEvaluators();
         }
 
         Or(Evaluator... evaluators) { this(Arrays.asList(evaluators)); }
@@ -86,13 +112,13 @@ abstract class CombiningEvaluator extends Evaluator {
 
         public void add(Evaluator e) {
             evaluators.add(e);
-            updateNumEvaluators();
+            updateEvaluators();
         }
 
         @Override
         public boolean matches(Element root, Element node) {
             for (int i = 0; i < num; i++) {
-                Evaluator s = evaluators.get(i);
+                Evaluator s = sortedEvaluators.get(i);
                 if (s.matches(root, node))
                     return true;
             }
